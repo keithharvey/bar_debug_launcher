@@ -67,7 +67,7 @@ def find_linux_datadir():
 def find_linux_launcher_binary():
     # Searches for the newest AppImage file in the current directory
     for file in reversed(sorted(os.listdir())):
-        if re.match(r'^Beyond-All-Reason.*\.AppImage$', file):
+        if re.match(r'^beyond[-_]?all[-_]?reason.*\.appimage$', file, re.IGNORECASE):
             return file
     return 'Beyond-All-Reason.AppImage'  # Just something to return...
 
@@ -169,17 +169,22 @@ def parsecache(path):
     menus = {}
     try:
         cachefiles = []
-        for cachedir in os.listdir(path):
-            if os.path.isdir(os.path.join(path,cachedir)):
-                for archivecachefile in os.listdir(os.path.join(path,cachedir)):
+        for item in os.listdir(path):
+            itempath = os.path.join(path, item)
+            if os.path.isdir(itempath):
+                for archivecachefile in os.listdir(itempath):
                     if 'archivecache' in archivecachefile.lower() and archivecachefile.lower().endswith('.lua'):
-                        archivecachefilepath = os.path.join(path,cachedir, archivecachefile)
+                        archivecachefilepath = os.path.join(itempath, archivecachefile)
                         lastmodified = os.path.getmtime(archivecachefilepath)
-                        print ("Found a cache file",cachedir,  archivecachefile, "last modified:", lastmodified)
+                        print ("Found a cache file", item, archivecachefile, "last modified:", lastmodified)
                         cachefiles.append((archivecachefilepath, lastmodified))
+            elif 'archivecache' in item.lower() and item.lower().endswith('.lua'):
+                lastmodified = os.path.getmtime(itempath)
+                print ("Found a cache file (direct)", item, "last modified:", lastmodified)
+                cachefiles.append((itempath, lastmodified))
 
         if len(cachefiles) > 0:
-            cachefiles = sorted(cachefiles, key = lambda x:[1], reverse = True)
+            cachefiles = sorted(cachefiles, key = lambda x: x[1], reverse = True)
             archivecachefilepath = cachefiles[0][0]
             print ("Loading Archive Cache File:", archivecachefilepath)
             archivecachecontents = open(archivecachefilepath).read()
@@ -218,7 +223,6 @@ def refresh():
         if '$VERSION' in menuname:
             modinfos[f'Spring-launcher with {menuname}'] = {'modtype': '0', 'name': menuname}
             modinfos[f'{menuname} (no launcher)'] = {'modtype': '5', 'name': menuname}
-            break
     for gamename in games.keys():
         if '$VERSION' in gamename:
             modinfos[gamename] = {'modtype': '1', 'name': gamename}

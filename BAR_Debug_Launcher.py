@@ -24,6 +24,8 @@ from parse_demo_file import Parse_demo_file
 
 from slpp import slpp
 
+from bar_launch.core import find_linux_launcher_binary as _find_linux_launcher_binary
+
 #Try to figure out the BAR install path:
 barinstallpath = os.path.abspath(os.path.dirname(sys.argv[0])) 
 cwd = os.getcwd()
@@ -65,11 +67,10 @@ def find_linux_datadir():
     return os.path.join(state_home, 'Beyond All Reason')
 
 def find_linux_launcher_binary():
-    # Searches for the newest AppImage file in the current directory
-    for file in reversed(sorted(os.listdir())):
-        if re.match(r'^beyond[-_]?all[-_]?reason.*\.appimage$', file, re.IGNORECASE):
-            return file
-    return 'Beyond-All-Reason.AppImage'  # Just something to return...
+    # Honors $BAR_APPIMAGE_PATH and --launcher-binary first; falls back to
+    # the legacy cwd scan so the standalone "drop next to the AppImage and
+    # double-click" workflow keeps working.
+    return _find_linux_launcher_binary(barinstallpath)
 
 if platform.system() == 'Windows':
     engine_binary = 'spring.exe'
@@ -205,6 +206,16 @@ def parsecache(path):
         print ("parsecache error, dont code blind!", e)
     return maps, games, menus
 
+def parsemodinfo(path):
+    try:
+        with open(path, 'r') as f:
+            contents = f.read()
+        table_str = '{' + contents.partition('{')[2].rpartition('}')[0] + '}'
+        return slpp.decode(table_str)
+    except Exception as e:
+        print(f"Error parsing {path}: {e}")
+        return None
+
 def refresh():
     global modinfos
     #global enginepaths
@@ -227,26 +238,34 @@ def refresh():
         if '$VERSION' in gamename:
             modinfos[gamename] = {'modtype': '1', 'name': gamename}
 
-    
-    # assume rapid://byar-chobby:test
-    # assume rapid://byar:test
-
-    #check menus for $VERSION's
-
-
-    '''
-    if os.path.exists(os.path.join(datafolder, 'games')):
-        gamespath = os.path.join(datafolder, 'games')
+    # Surface locally-checked-out games (e.g. via Devtools' link::create) as
+    # [LOCAL] entries so the dropdown distinguishes them from rapid:// builds.
+    gamespath = os.path.join(datafolder, 'games')
+    if os.path.exists(gamespath):
         for gamedir in os.listdir(gamespath):
-            if os.path.isdir(os.path.join(gamespath)):
-                gamepath = os.path.join(gamespath, gamedir)
-                modinfopath = os.path.join(gamepath, 'modinfo.lua')
-                if os.path.exists(modinfopath):
-                    modinfo = parsemodinfo(modinfopath)
-                    modinfos[modinfo['name'] + " " + modinfo['version']] = modinfo
+            gamepath = os.path.join(gamespath, gamedir)
+            if not os.path.isdir(gamepath):
+                continue
+            modinfopath = os.path.join(gamepath, 'modinfo.lua')
+            if not os.path.exists(modinfopath):
+                continue
+            modinfo = parsemodinfo(modinfopath)
+            if not (modinfo and 'name' in modinfo):
+                continue
+            base_name = modinfo['name']
+            version = modinfo.get('version', '')
+            if version == '$VERSION' and '$VERSION' not in base_name:
+                name = f"{base_name} $VERSION"
+            else:
+                name = base_name
+            mtype = str(modinfo.get('modtype', '1'))
+            display_name = f"[LOCAL] {gamedir}"
+            modinfos[display_name] = {'modtype': mtype, 'name': name}
+            if mtype == '5':
+                modinfos[f"[LOCAL] Spring-launcher with {gamedir}"] = {'modtype': '0', 'name': name}
+
     for k, v in modinfos.items():
         print(k, v)
-    '''
 
 refresh()
 

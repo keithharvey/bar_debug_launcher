@@ -24,8 +24,8 @@ def _build_parser() -> argparse.ArgumentParser:
         description="Launch BAR / Recoil for development. Headless or with the existing Tk GUI.",
     )
     p.add_argument("--gui", dest="gui", action="store_true", default=None,
-                   help="force the Tk GUI even if intent flags are present")
-    p.add_argument("--no-gui", dest="gui", action="store_false",
+                   help="force the Tk GUI (default unless --no-gui/--headless or --print-cmd is given)")
+    p.add_argument("--no-gui", "--headless", dest="gui", action="store_false",
                    help="run headless; requires either --play or --game")
     p.add_argument("--data-dir", help="override BAR data dir (default: auto-detect)")
     p.add_argument("--bar-install", help="override BAR install path (default: dirname of argv[0])")
@@ -33,7 +33,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--engine", help="engine version key from the engine cache (e.g. 'recoil_2025.06.19' or 'local-build')")
     p.add_argument("--play", choices=("chobby", "bar", "replay"), help="what to launch")
     p.add_argument("--source", choices=("latest", "local", "pinned"), default="latest",
-                   help="version source: latest test channel, local Devtools checkout, or a pinned cached version")
+                   help="version source: latest test channel, local checkout under <data-dir>/games/, or a pinned cached version")
     p.add_argument("--version", help="cached version, only meaningful with --source pinned")
     p.add_argument("--boot", choices=("launcher", "engine"),
                    help="boot via the AppImage launcher or directly into the engine (defaults: launcher for chobby, engine for bar/replay)")
@@ -77,11 +77,13 @@ def _resolve_modinfo(ctx, args) -> tuple[str, dict]:
 def main(argv: Optional[list[str]] = None) -> int:
     args = _build_parser().parse_args(argv)
 
-    # GUI default: if no intent flags were supplied and --no-gui wasn't asked for, run the GUI.
-    intent_flags_given = any(
-        v is not None for v in (args.play, args.game, args.mapname, args.boot, args.version)
-    ) or args.print_cmd
-    run_gui = args.gui if args.gui is not None else (not intent_flags_given)
+    # GUI is the default. Going headless is an explicit choice -- either
+    # --no-gui/--headless, or --print-cmd which is a pure-CLI affordance and
+    # has no GUI equivalent. Intent flags (--play, --source, etc.) on their
+    # own do NOT skip the GUI; they're irrelevant in GUI mode (the GUI has
+    # its own default-resolution logic) but they shouldn't be a trapdoor that
+    # silently bypasses it. When the user wants headless, they say so.
+    run_gui = args.gui if args.gui is not None else (not args.print_cmd)
 
     if run_gui:
         # The Tk GUI still lives in BAR_Debug_Launcher.py for now; spawn it.

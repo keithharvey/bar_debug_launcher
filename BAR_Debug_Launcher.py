@@ -12,6 +12,7 @@ import subprocess
 import shlex
 import sys
 import shutil
+import webbrowser
 import requests
 try:
     import py7zr
@@ -24,7 +25,15 @@ from parse_demo_file import Parse_demo_file
 
 from slpp import slpp
 
-from bar_launch.core import find_linux_launcher_binary as _find_linux_launcher_binary
+from bar_launch.core import Context, find_linux_launcher_binary as _find_linux_launcher_binary
+from bar_launch.engine_cmd import build_runcmd
+from bar_launch.intents import (
+    BOOT_CHOICES,
+    Intent,
+    PLAY_CHOICES,
+    default_boot,
+    resolve_intent,
+)
 
 #Try to figure out the BAR install path:
 barinstallpath = os.path.abspath(os.path.dirname(sys.argv[0])) 
@@ -238,8 +247,9 @@ def refresh():
         if '$VERSION' in gamename:
             modinfos[gamename] = {'modtype': '1', 'name': gamename}
 
-    # Surface locally-checked-out games (e.g. via Devtools' link::create) as
-    # [LOCAL] entries so the dropdown distinguishes them from rapid:// builds.
+    # Surface locally-checked-out games (anything symlinked or hardlinked
+    # into <data-dir>/games/) as [LOCAL] entries so the dropdown
+    # distinguishes them from rapid:// builds.
     gamespath = os.path.join(datafolder, 'games')
     if os.path.exists(gamespath):
         for gamedir in os.listdir(gamespath):
@@ -447,153 +457,535 @@ def try_start_replay(replayfilepath):
     #print (demo.header)
 
 
+class _Tooltip:
+    """Lightweight hover/focus tooltip. text_func is called at show-time so
+    each tooltip reflects the current selection rather than a stale snapshot."""
+    def __init__(self, widget, text_func, delay_ms=350):
+        self.widget = widget
+        self.text_func = text_func
+        self.delay_ms = delay_ms
+        self.tip = None
+        self.after_id = None
+        widget.bind('<Enter>', self._schedule, add='+')
+        widget.bind('<FocusIn>', self._schedule, add='+')
+        widget.bind('<Leave>', self._hide, add='+')
+        widget.bind('<FocusOut>', self._hide, add='+')
+        widget.bind('<ButtonPress>', self._hide, add='+')
+
+    def _schedule(self, _evt=None):
+        self._cancel()
+        self.after_id = self.widget.after(self.delay_ms, self._show)
+
+    def _cancel(self):
+        if self.after_id:
+            try: self.widget.after_cancel(self.after_id)
+            except Exception: pass
+            self.after_id = None
+
+    def _show(self):
+        text = self.text_func() or ""
+        if not text:
+            return
+        x = self.widget.winfo_rootx() + 16
+        y = self.widget.winfo_rooty() + self.widget.winfo_height() + 4
+        self.tip = tk.Toplevel(self.widget)
+        self.tip.wm_overrideredirect(True)
+        self.tip.wm_geometry(f"+{x}+{y}")
+        frame = tk.Frame(self.tip, background='#1f2937', borderwidth=0)
+        frame.pack()
+        tk.Label(frame, text=text, background='#1f2937', foreground='#f9fafb',
+                 justify=tk.LEFT, padx=10, pady=8,
+                 font=('TkDefaultFont', 9), wraplength=420).pack()
+
+    def _hide(self, _evt=None):
+        self._cancel()
+        if self.tip:
+            try: self.tip.destroy()
+            except Exception: pass
+            self.tip = None
+
+
 if len(sys.argv) < 2: # no arguments passed, use GUI
     root = tk.Tk()
-    #root = ThemedTk(theme='black')
-    ttk.Label(
-        text=f"Place this next to {launcher_binary_display} to scan for contents.\nhttps://github.com/beyond-all-reason/bar_debug_launcher by Beherith").pack(
-        fill=tk.X, padx=5, pady=5)
-
-
-    modoptionstb = tk.Text(root, height = 5, font=("Courier", 8))
-
-    cmdtext = tk.Text(root, height=7, font=("Courier", 8))
-    # config the root window
-    root.geometry('500x550')
+    # ----- Window-size floors (single edit point) -------------------------
+    # Final window size is max(MIN_*, measured content size). Edit these to
+    # taste -- if you want a smaller window, lower the floor. The measure
+    # block before mainloop() will still upsize past these if Tk reports a
+    # natural content size that won't fit, so the button row can't end up
+    # clipped, only the floor moves.
+    MIN_W, MIN_H = 480, 620
+    # ----------------------------------------------------------------------
+    root.geometry(f'{MIN_W}x{MIN_H}')
     root.resizable(True, True)
     root.title('BAR Replay and Debug Launcher')
-
-    #root.config(bg="#26242f")  
     try:
         root.iconbitmap('bar-icon.ico')
     except:
         print("Unable to find bar-icon.ico")
-    # label
-    ttk.Label(text="Select the engine version you want to use:").pack(fill=tk.X, padx=5, pady=5)
 
-    # create a combobox
+    # ttk theme: prefer 'clam' (flat, modern-ish look that ships with stock
+    # Tk on Linux/macOS/Windows). Falls back to whatever's available.
+    style = ttk.Style()
+    for _theme in ('clam', 'alt', 'default'):
+        if _theme in style.theme_names():
+            try:
+                style.theme_use(_theme)
+            except tk.TclError:
+                continue
+            break
+
+    # Custom styles for visual hierarchy.
+    style.configure('Hint.TLabel', foreground='#666')
+    style.configure('Link.TLabel', foreground='#2563eb')
+    style.configure('Section.TLabelframe', padding=10)
+    style.configure('Section.TLabelframe.Label', font=('TkDefaultFont', 10, 'bold'))
+
+    PAD = 8
+
+    # Root uses grid (not pack) so each section sits in its own reserved row.
+    # If the config block ever grows beyond expectations, the button row at
+    # row=4 still renders -- it can't be pushed off the bottom by overflow
+    # above. The cmd/mod text panels never grow (fixed line counts), so no
+    # row needs weight=1; weight stays 0 everywhere.
+    root.grid_columnconfigure(0, weight=1)
+
+    # Header / preamble: dim explainer on the left, "GitHub" link on the
+    # right. Tk has no native hyperlink, so we style a Label with Link.TLabel
+    # + hand cursor + click handler that opens the default browser.
+    header = ttk.Frame(root)
+    header.grid(row=0, column=0, sticky=tk.EW, padx=PAD, pady=(PAD, PAD // 2))
+    header.columnconfigure(0, weight=1)
+    # No wraplength: let the label keep its natural single-line width so
+    # winfo_reqwidth() picks it up and the window grows to match. Pinning
+    # wraplength to MIN_W forced wrapping whenever MIN_W < natural width.
+    ttk.Label(header,
+              text=f"Place this next to {launcher_binary_display} to scan for contents.",
+              style='Hint.TLabel', justify=tk.LEFT,
+              ).grid(row=0, column=0, sticky=tk.W)
+    _GH_URL = "https://github.com/beyond-all-reason/bar_debug_launcher"
+    _link = ttk.Label(header, text="GitHub ↗", style='Link.TLabel', cursor='hand2')
+    _link.grid(row=0, column=1, sticky=tk.E, padx=(PAD, 0))
+    _link.bind('<Button-1>', lambda e: webbrowser.open(_GH_URL))
+    _link.bind('<Enter>', lambda e: _link.configure(font=('TkDefaultFont', 9, 'underline')))
+    _link.bind('<Leave>', lambda e: _link.configure(font=('TkDefaultFont', 9)))
+
+    # ---------------------------------------------------------------------
+    # Intent-first config: Engine, then (Play, Source, Boot, Map) in a
+    # 2-column grid so labels and widgets line up. The ⓘ-square-button has
+    # been replaced with a less-jarring "Details…" link next to the source
+    # combobox -- same affordance, calmer presentation.
+    # ---------------------------------------------------------------------
+
+    PLAY_LABELS = {
+        "chobby": "Chobby (lobby/menu)",
+        "bar":    "BAR (game directly)",
+        "replay": "Replay…",
+    }
+    PLAY_BY_LABEL = {v: k for k, v in PLAY_LABELS.items()}
+
+    def _local_available(play):
+        if play == "replay":
+            return False
+        try:
+            resolve_intent(Intent(play, "local", default_boot(play)), modinfos)
+            return True
+        except (KeyError, ValueError):
+            return False
+
+    def _pinned_versions(play):
+        versions = set()
+        if play == "chobby":
+            wanted_modtype = {"5", "0"}
+        elif play == "bar":
+            wanted_modtype = {"1"}
+        else:
+            return []
+        for label, mi in modinfos.items():
+            if label.startswith("[LOCAL]"):
+                continue
+            if str(mi.get("modtype", "")) not in wanted_modtype:
+                continue
+            m = re.search(r"(\S+)\s+\$VERSION", label)
+            if m:
+                versions.add(m.group(1))
+        return sorted(versions, reverse=True)
+
+    def _local_source_paths(play):
+        if play == "replay":
+            return []
+        gamespath = os.path.join(datafolder, "games")
+        if not os.path.isdir(gamespath):
+            return []
+        wanted_modtype = "1" if play == "bar" else "5"
+        out = []
+        for gamedir in sorted(os.listdir(gamespath)):
+            label = f"[LOCAL] {gamedir}"
+            mi = modinfos.get(label)
+            if mi and str(mi.get("modtype", "")) == wanted_modtype:
+                out.append(os.path.join(gamespath, gamedir))
+        return out
+
+    config_frame = ttk.LabelFrame(root, text='What to launch', style='Section.TLabelframe')
+    config_frame.grid(row=1, column=0, sticky=tk.EW, padx=PAD, pady=PAD // 2)
+    # Column 1 is the wide widget column; column 2 holds inline addons (link).
+    config_frame.columnconfigure(1, weight=1)
+
+    # Three orthogonal source axes (engine / chobby / game) each get their
+    # own dropdown. Whichever is "active" depends on Play; the inactive ones
+    # grey out (state=disabled) but their values persist so toggling Play
+    # doesn't blow away your pin on the other axis.
     selected_engine = tk.StringVar()
-    engine_cb = ttk.Combobox(root, textvariable=selected_engine, height=min(len(engines), 40))
-    engine_cb['values'] = sorted(engines.keys())
-    engine_cb.set(sorted(engines.keys())[-1])
-    # prevent typing a value
-    engine_cb['state'] = 'readonly'
-    # place the widget
-    engine_cb.pack(fill=tk.X, padx=5, pady=5)
-
-    ttk.Label(text="Select the game/menu version you want to run:").pack(fill=tk.X, padx=5, pady=5)
-
-    # create a combobox
-    selected_game = tk.StringVar()
-    game_cb = ttk.Combobox(root, textvariable=selected_game)
-    game_cb['values'] = list(modinfos.keys())
-    game_cb.set(list(modinfos.keys())[0])
-    # prevent typing a value
-    game_cb['state'] = 'readonly'
-    # place the widget
-    game_cb.pack(fill=tk.X, padx=5, pady=5)
-
-    ttk.Label(text="Select a map if you want to test the game directly. Not all maps will work.").pack(fill=tk.X, padx=5,
-                                                                                                    pady=5)
-
-    # create a combobox
+    selected_play_label = tk.StringVar()
+    selected_chobby_source = tk.StringVar()
+    selected_game_source = tk.StringVar()
+    selected_boot = tk.StringVar()
     selected_map = tk.StringVar()
-    map_cb = ttk.Combobox(root, textvariable=selected_map, height=min(len(maps), 50))
+
+    def _grid_label(text, row):
+        ttk.Label(config_frame, text=text).grid(row=row, column=0, sticky=tk.W, padx=(0, PAD), pady=4)
+
+    # Engine source row -- the engine binary. Always active for chobby/bar;
+    # replay overrides via the demo header but the default still comes from here.
+    _grid_label("Engine source", 0)
+    engine_cb = ttk.Combobox(config_frame, textvariable=selected_engine, state='readonly',
+                             height=min(len(engines), 40))
+    engine_cb['values'] = sorted(engines.keys())
+    _default_engine = next(
+        (k for k in engines.keys() if "local-build" in k),
+        sorted(engines.keys())[-1],
+    )
+    engine_cb.set(_default_engine)
+    engine_cb.grid(row=0, column=1, columnspan=2, sticky=tk.EW, pady=4)
+
+    # Play row -- which thing to launch (chobby vs bar vs replay).
+    _grid_label("Play", 1)
+    play_cb = ttk.Combobox(config_frame, textvariable=selected_play_label, state="readonly",
+                           values=[PLAY_LABELS[p] for p in PLAY_CHOICES])
+    play_cb.set(PLAY_LABELS["chobby"])
+    play_cb.grid(row=1, column=1, columnspan=2, sticky=tk.EW, pady=4)
+
+    # Chobby source -- active when Play=chobby.
+    _grid_label("Chobby source", 2)
+    chobby_source_cb = ttk.Combobox(config_frame, textvariable=selected_chobby_source, state="readonly")
+    chobby_source_cb.grid(row=2, column=1, columnspan=2, sticky=tk.EW, pady=4)
+
+    # Game source -- active when Play=BAR.
+    _grid_label("Game source", 3)
+    game_source_cb = ttk.Combobox(config_frame, textvariable=selected_game_source, state="readonly")
+    game_source_cb.grid(row=3, column=1, columnspan=2, sticky=tk.EW, pady=4)
+
+    # Boot row
+    _grid_label("Boot", 4)
+    boot_cb = ttk.Combobox(config_frame, textvariable=selected_boot, state="readonly",
+                           values=list(BOOT_CHOICES), width=12)
+    boot_cb.grid(row=4, column=1, columnspan=2, sticky=tk.W, pady=4)
+
+    # Map row
+    _grid_label("Map", 5)
+    map_cb = ttk.Combobox(config_frame, textvariable=selected_map, state='readonly',
+                          height=min(len(maps), 50))
     map_cb['values'] = ['Ill choose my own once ingame'] + sorted(maps.keys())
     map_cb.set('Ill choose my own once ingame')
-            # prevent typing a value
-    map_cb['state'] = 'readonly'
-    # place the widget
-    map_cb.pack(fill=tk.X, padx=5, pady=5)
+    map_cb.grid(row=5, column=1, columnspan=2, sticky=tk.EW, pady=4)
+
+    # One-line "hover for details" hint under the dropdowns -- a single
+    # discoverability cue rather than six separate static helpers.
+    ttk.Label(config_frame,
+              text="hover any field for technical details · greyed sources are inactive but persist",
+              style='Hint.TLabel').grid(row=6, column=0, columnspan=3, sticky=tk.W, pady=(PAD // 2, 0))
+
+    # Generated command preview (smaller; full command always visible).
+    cmd_frame = ttk.LabelFrame(root, text='Generated command', style='Section.TLabelframe')
+    cmd_frame.grid(row=2, column=0, sticky=tk.EW, padx=PAD, pady=PAD // 2)
+    # width=1 so Tk doesn't claim the default 80-column natural width as the
+    # window's required width -- the LabelFrame stretches via fill=tk.X and
+    # the inner Text follows. Without this the Text alone forces ~560px.
+    cmdtext = tk.Text(cmd_frame, height=4, width=1, font=("Courier", 9),
+                      wrap=tk.WORD, relief=tk.FLAT, borderwidth=0,
+                      background="#f5f5f5")
+    cmdtext.pack(fill=tk.X)
+
+    # Modoptions
+    mod_frame = ttk.LabelFrame(root, text='Additional modoptions', style='Section.TLabelframe')
+    mod_frame.grid(row=3, column=0, sticky=tk.EW, padx=PAD, pady=PAD // 2)
+    modoptionstb = tk.Text(mod_frame, height=3, width=1, font=("Courier", 9),
+                           wrap=tk.WORD, relief=tk.FLAT, borderwidth=1)
+    modoptionstb.pack(fill=tk.X)
+
+    # ---------------------------------------------------------------------
+    # Per-field tooltips. Each text_func is called at hover time so it
+    # reflects the *current* selection -- no stale strings.
+    # ---------------------------------------------------------------------
+    def _engine_tip():
+        eng = selected_engine.get()
+        path = engines.get(eng, '?')
+        note = ("Local dev build (linked into <data-dir>/engine/local-build/)."
+                if "local-build" in eng
+                else "Cached engine release.")
+        return (f"Engine: {eng}\n"
+                f"Binary: {path}\n\n{note}\n\n"
+                "Used as the spring(.exe) executable; passed --isolation "
+                "and --write-dir <data-dir> regardless of how it boots.")
+
+    def _play_tip():
+        play = PLAY_BY_LABEL.get(selected_play_label.get(), '?')
+        return {
+            'chobby': ("Chobby — the lobby/menu (room browser, settings, replays).\n\n"
+                       "Resolves to a 'menu' archive: modtype 0 when booting via the "
+                       "AppImage launcher, modtype 5 when booting the engine directly "
+                       "with --menu."),
+            'bar':    ("Beyond All Reason game directly (skirmish, debugging).\n\n"
+                       "Resolves to a 'game' archive (modtype 1). The launcher writes "
+                       "bar_debug_launcher_script.txt with the chosen map and the engine "
+                       "reads that as its start script."),
+            'replay': (".sdfz replay file. The Play dropdown sets the mode but the file "
+                       "itself is picked via the 'Open and launch a replay' button below. "
+                       "Engine version is taken from the demo header, not the Engine "
+                       "dropdown above."),
+        }.get(play, '')
+
+    def _source_axis_tip(axis_play, source_var):
+        # Shared body for the chobby/game source tooltips. axis_play is the
+        # play this dropdown represents ("chobby" or "bar"); source_var is
+        # its StringVar. The tooltip flags whether the axis is currently
+        # active for the launch (Play matches) so the user can tell at a
+        # glance which dropdown drives the resolved command.
+        active_play = PLAY_BY_LABEL.get(selected_play_label.get(), '?')
+        active = (active_play == axis_play)
+        src_kind, src_arg = _parse_source(source_var.get())
+        boot = selected_boot.get() or default_boot(axis_play)
+        what = "Chobby (lobby/menu)" if axis_play == "chobby" else "BAR (game)"
+        head = (f"{what} source — ACTIVE for this launch.\n\n" if active
+                else f"{what} source — inactive (Play is set to {active_play!r}). "
+                     f"Value persists for when you switch back.\n\n")
+        head += {
+            'latest': f"Latest test channel — pulled at run time via "
+                      f"{'rapid://byar-chobby:test' if axis_play == 'chobby' else 'rapid://byar:test'}.",
+            'local':  f"Local {what} checkout — a working tree linked into <data-dir>/games/.",
+            'pinned': f"Pinned cached {what} version ({src_arg or '?'}).",
+        }.get(src_kind, '')
+        try:
+            label, mi = resolve_intent(Intent(axis_play, src_kind, boot, version=src_arg), modinfos)
+            body = (f"\n\nResolves to: {label}\n"
+                    f"Archive name: {mi.get('name', '?')}\n"
+                    f"modtype: {mi.get('modtype', '?')} "
+                    f"({'AppImage launcher' if mi.get('modtype') == '0' else 'engine direct'})")
+        except (KeyError, ValueError) as e:
+            body = f"\n\nResolve error: {e}"
+        if src_kind == 'local':
+            paths = _local_source_paths(axis_play)
+            if paths:
+                body += "\n\nCheckout: " + paths[0]
+        return head + body
+
+    def _chobby_source_tip(): return _source_axis_tip("chobby", selected_chobby_source)
+    def _game_source_tip():   return _source_axis_tip("bar",    selected_game_source)
+
+    def _boot_tip():
+        return {
+            'launcher': ("Boot via Beyond-All-Reason.AppImage.\n\n"
+                         "Writes a dev-lobby JSON, then runs the AppImage with -c <config>. "
+                         "The AppImage handles splash, auto-update, and rapid:// downloads "
+                         "of any missing assets. Slower start, but matches the real-player "
+                         "experience."),
+            'engine':   ("Boot the engine binary directly.\n\n"
+                         "Runs spring(.exe) with --menu <name> (chobby) or a generated "
+                         "start script (bar). Faster, no launcher overhead, but breaks if "
+                         "any assets are missing — there's no download retry layer."),
+        }.get(selected_boot.get(), '')
+
+    def _map_tip():
+        play = PLAY_BY_LABEL.get(selected_play_label.get(), '?')
+        if play != 'bar':
+            return "Map is only used when Play = BAR. Ignored for chobby and replays."
+        mp = selected_map.get()
+        if mp == 'Ill choose my own once ingame':
+            return ("No map preselected.\n\nThe engine starts without a start script; "
+                    "you'll choose a map from the in-game skirmish menu.")
+        return (f"Map: {mp}\n\nWill write bar_debug_launcher_script.txt containing a "
+                "[game] block with mapname=<this>, gametype=<resolved game name>, and "
+                "any modoptions you've added below. Engine reads that as its start "
+                "script and goes straight into the match.")
+
+    _Tooltip(engine_cb,        _engine_tip)
+    _Tooltip(play_cb,          _play_tip)
+    _Tooltip(chobby_source_cb, _chobby_source_tip)
+    _Tooltip(game_source_cb,   _game_source_tip)
+    _Tooltip(boot_cb,          _boot_tip)
+    _Tooltip(map_cb,           _map_tip)
+
+    def _parse_source(s):
+        if s == "Latest":
+            return ("latest", None)
+        if s.startswith("Local checkout"):
+            return ("local", None)
+        if s.startswith("Pinned: "):
+            return ("pinned", s[len("Pinned: "):])
+        return ("latest", None)
+
+    def _source_options_for(play):
+        """Return (opts list, default-local-opt-if-any) for one source axis."""
+        opts = ["Latest"]
+        local_opt = None
+        if _local_available(play):
+            paths = _local_source_paths(play)
+            tag = paths[0] if paths else "<unknown path>"
+            local_opt = f"Local checkout ({tag})"
+            opts.append(local_opt)
+        for v in _pinned_versions(play):
+            opts.append(f"Pinned: {v}")
+        return opts, local_opt
+
+    def _populate_chobby_sources():
+        opts, local_opt = _source_options_for("chobby")
+        chobby_source_cb['values'] = opts
+        if selected_chobby_source.get() not in opts:
+            selected_chobby_source.set(local_opt or opts[0])
+
+    def _populate_game_sources():
+        opts, local_opt = _source_options_for("bar")
+        game_source_cb['values'] = opts
+        if selected_game_source.get() not in opts:
+            selected_game_source.set(local_opt or opts[0])
+
+    def _refresh_states():
+        """Grey out the source dropdowns / Map / Boot that don't apply to
+        the current Play. The disabled state preserves the StringVar's value
+        -- it's strictly visual + click-blocking."""
+        play = PLAY_BY_LABEL.get(selected_play_label.get(), "chobby")
+        chobby_source_cb.configure(state="readonly" if play == "chobby" else "disabled")
+        game_source_cb.configure(state="readonly" if play == "bar" else "disabled")
+        map_cb.configure(state="readonly" if play == "bar" else "disabled")
+        boot_cb.configure(state="readonly" if play in ("chobby", "bar") else "disabled")
+        engine_cb.configure(state="readonly" if play != "replay" else "disabled")
+
+    _populate_chobby_sources()
+    _populate_game_sources()
+    selected_boot.set(default_boot("chobby"))
 
     runcmd = ""
 
+    def _ctx():
+        # Wrap the GUI's existing globals as a Context so we can reuse the
+        # CLI's command builder. build_runcmd is the canonical place that
+        # encodes how (modinfo, engine, map) becomes the engine invocation.
+        return Context(
+            barinstallpath=barinstallpath,
+            datafolder=datafolder,
+            launcher_binary=launcher_binary,
+            engines=engines,
+            modinfos=modinfos,
+        )
 
-    def genscript(map, game):
-        modopts = modoptionstb.get('1.0',tk.END)
-        print (modopts)
-        scripttxt =  scriptbase % (modopts, map, game)
-        scriptfile = open("bar_debug_launcher_script.txt", 'w')
-        scriptfile.write(scripttxt)
-        scriptfile.close()
-        print('Generated script:', scripttxt)
-
-
-    def gencmd(event):
+    def gencmd(event=None):
         global runcmd
-        mygame = selected_game.get()
-        modinfo = modinfos[mygame]
+        play = PLAY_BY_LABEL.get(selected_play_label.get(), "chobby")
+        if play == "replay":
+            runcmd = ""
+            cmdtext.delete('1.0', tk.END)
+            cmdtext.insert('1.0', "Use the 'Open and launch a replay' button below.")
+            return
+        # Pick the active source axis for this Play. The other source
+        # dropdown's value is ignored by this launch but stays set for next
+        # time (see _refresh_states for the visual greying).
+        if play == "chobby":
+            src_str = selected_chobby_source.get()
+        else:  # bar
+            src_str = selected_game_source.get()
+        src_kind, src_arg = _parse_source(src_str)
+        boot = selected_boot.get() or default_boot(play)
+        try:
+            label, modinfo = resolve_intent(
+                Intent(play, src_kind, boot, version=src_arg), modinfos
+            )
+        except (KeyError, ValueError) as e:
+            runcmd = ""
+            cmdtext.delete('1.0', tk.END)
+            cmdtext.insert('1.0', f"# could not resolve intent: {e}")
+            return
         myengine = selected_engine.get()
         mymap = selected_map.get()
-        if modinfo['modtype'] == '5':
-            runcmd = f'"{engines[myengine]}"  --isolation --write-dir "{os.path.join(barinstallpath, datafolder)}" --menu "{modinfo["name"]}"'
-        elif modinfo['modtype'] == '1':
-            if mymap != 'Ill choose my own once ingame':
-                genscript(mymap, modinfo["name"])
-                runcmd = f'"{engines[myengine]}"  --isolation --write-dir "{os.path.join(barinstallpath, datafolder)}" bar_debug_launcher_script.txt'
-            else:
-                runcmd = f'"{engines[myengine]}"  --isolation --write-dir "{os.path.join(barinstallpath, datafolder)}"'
-        elif modinfo['modtype'] == '0':
-            configdev = "bar_debug_launcher_config.json"
-            bar_debug_launcher_config_file = open(configdev, 'w')
-            bar_debug_launcher_config_file.write(
-                """{
-                    "title": "Beyond All Reason",
-                    "setups": [
-                        {
-                            "package": {
-                                "id": "dev-lobby",
-                                "display": "Dev Lobby"
-                            },
-                            "downloads": {
-                                "engines": ["%s"]
-                            },
-                            "no_start_script": true,
-                            "no_downloads": true,
-                            "auto_start": true,
-                            "launch": {
-                                "start_args": ["--menu", "%s"]
-                            }
-                        }
-                    ]
-                }""" % (myengine, modinfo['name'])) # engine needs "105.1.1-941-g941148f bar" format
-            bar_debug_launcher_config_file.close()
-
-            runcmd = f'"{os.path.join(barinstallpath, launcher_binary)}" -c "{os.path.join(barinstallpath, configdev)}"'
-
-        print(runcmd)
+        modopts = modoptionstb.get('1.0', tk.END)
+        try:
+            runcmd = build_runcmd(_ctx(), modinfo, myengine, mymap, modopts)
+        except (KeyError, ValueError) as e:
+            runcmd = ""
+            cmdtext.delete('1.0', tk.END)
+            cmdtext.insert('1.0', f"# build_runcmd error: {e}")
+            return
+        print(f"[{label}]", runcmd)
         cmdtext.delete('1.0', tk.END)
         cmdtext.insert('1.0', str(runcmd))
 
+    def _on_play_changed(event=None):
+        play = PLAY_BY_LABEL.get(selected_play_label.get(), "chobby")
+        # Re-default boot for the new play; user can still override.
+        if play != "replay":
+            selected_boot.set(default_boot(play))
+        _refresh_states()
+        gencmd()
 
-    engine_cb.bind('<<ComboboxSelected>>', gencmd)
-    game_cb.bind('<<ComboboxSelected>>', gencmd)
-    map_cb.bind('<<ComboboxSelected>>', gencmd)
+    engine_cb.bind('<<ComboboxSelected>>',        gencmd)
+    play_cb.bind('<<ComboboxSelected>>',          _on_play_changed)
+    chobby_source_cb.bind('<<ComboboxSelected>>', gencmd)
+    game_source_cb.bind('<<ComboboxSelected>>',   gencmd)
+    boot_cb.bind('<<ComboboxSelected>>',          gencmd)
+    map_cb.bind('<<ComboboxSelected>>',           gencmd)
 
-    ttk.Label(text="This is the command that will be run:").pack(fill=tk.X, padx=5, pady=5)
-    cmdtext.pack(fill=tk.X)
-    ttk.Label(text="Additional modoptions:").pack(fill=tk.X, padx=5, pady=5)
-    modoptionstb.pack(fill = tk.X)
+    # Initial state-toggle + first command render.
+    _refresh_states()
 
     def startreplay():
         filetypes = [('BAR Replay Files', '*.sdfz'),
                     ('All files', '*.*')]
-        filename = filedialog.askopenfilename(title = 'Select a replay to watch', initialdir = os.path.join(barinstallpath, datafolder, 'demos'), filetypes = filetypes)
-        print (filename)
+        filename = filedialog.askopenfilename(title='Select a replay to watch',
+                                              initialdir=os.path.join(barinstallpath, datafolder, 'demos'),
+                                              filetypes=filetypes)
+        print(filename)
         if filename:
             try_start_replay(filename)
-
-    tk.Button(root, text="Open and launch a replay", command=startreplay).pack(side=tk.BOTTOM, fill=tk.X)
 
     def startspring():
         gencmd(None)
         print('starting spring with', runcmd)
-        subprocess.Popen(shlex.split(runcmd),close_fds=True )
+        subprocess.Popen(shlex.split(runcmd), close_fds=True)
 
-
-    tk.Button(root, text="Start with the above selected settings", command=startspring).pack(fill=tk.X)
+    button_frame = ttk.Frame(root)
+    button_frame.grid(row=4, column=0, sticky=tk.EW, padx=PAD, pady=(PAD // 2, PAD))
+    button_frame.columnconfigure(0, weight=1)
+    button_frame.columnconfigure(1, weight=1)
+    ttk.Button(button_frame, text="Open and launch a replay…",
+               command=startreplay).grid(row=0, column=0, sticky=tk.EW, padx=(0, PAD // 2))
+    # Primary action: emphasize via ttk.Style (TButton can't easily get a
+    # bold variant without a custom style, so we use a slightly bolder label).
+    style.configure('Primary.TButton', font=('TkDefaultFont', 10, 'bold'))
+    ttk.Button(button_frame, text="▶  Launch with selected settings",
+               style='Primary.TButton',
+               command=startspring).grid(row=0, column=1, sticky=tk.EW, padx=(PAD // 2, 0))
 
     gencmd(None)  # init defaults
+
+    # Hard sizing: ask Tk what each widget actually rendered to (which captures
+    # theme padding, system font DPI, HiDPI scaling -- everything the
+    # estimated-by-eyeball geometry hint above gets wrong) and size the window
+    # from that, with a floor. Without this, on themes/DPIs where comboboxes
+    # render taller than expected, the bottom rows get pushed off-screen.
+    root.update_idletasks()
+    req_w = root.winfo_reqwidth()
+    req_h = root.winfo_reqheight()
+    # MIN_W/MIN_H are floors -- final size is at least MIN_*, but grows
+    # past that if natural content needs more room. This makes the window
+    # wide enough to fit the header without wrapping, regardless of MIN_W.
+    # If you want hard MIN_* (no auto-grow), replace `max(...)` with the
+    # MIN_* literal.
+    win_w = max(MIN_W, req_w + 8)
+    win_h = max(MIN_H, req_h + 8)
+    # minsize first so the WM has the lower bound. Schedule the resize via
+    # after_idle so it runs AFTER Tk's auto-fit-to-content pass -- otherwise
+    # Tk shrinks the window back to natural content size when our requested
+    # width exceeds it (the "MIN_W up doesn't work" failure).
+    root.minsize(win_w, win_h)
+    root.after_idle(lambda: root.geometry(f"{win_w}x{win_h}"))
     root.mainloop()
 else:
     #arg passed, it better be a replay file

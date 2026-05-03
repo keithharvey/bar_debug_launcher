@@ -92,7 +92,7 @@ def resolve_intent(intent: Intent, modinfos: dict[str, dict]) -> tuple[str, dict
                 return label, mi
         raise KeyError(
             f"no [LOCAL] entry matches play={intent.play} boot={intent.boot}; "
-            f"did you run `just link::create`?"
+            f"is a checkout linked into <data-dir>/games/?"
         )
 
     # Pinned -> match $VERSION-tagged entries by substring of intent.version.

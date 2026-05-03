@@ -70,13 +70,24 @@ _APPIMAGE_RE = re.compile(r"^beyond[-_]?all[-_]?reason.*\.appimage$", re.IGNOREC
 
 
 def find_linux_launcher_binary(barinstallpath: Optional[str] = None) -> str:
+    # Resolution order:
+    #   1. $BAR_APPIMAGE_PATH if it points at an existing AppImage *file*.
+    #   2. $BAR_APPIMAGE_PATH if it points at a *directory* containing one --
+    #      this lets users set BAR_APPIMAGE_PATH=~/Applications/ or =~/apps/BAR/
+    #      without having to know the AppImage's exact filename, which churns
+    #      with each release.
+    #   3. cwd / barinstallpath scan, for the standalone "drop the launcher
+    #      next to the AppImage and double-click" workflow.
+    candidates = []
     env_path = os.environ.get("BAR_APPIMAGE_PATH")
     if env_path:
         expanded = os.path.expanduser(env_path)
         if os.path.isfile(expanded):
             return expanded
+        if os.path.isdir(expanded):
+            candidates.append(expanded)
 
-    candidates = [os.getcwd()]
+    candidates.append(os.getcwd())
     if barinstallpath:
         candidates.append(barinstallpath)
     for d in candidates:

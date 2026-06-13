@@ -36,7 +36,7 @@ from bar_launch.intents import (
 )
 
 #Try to figure out the BAR install path:
-barinstallpath = os.path.abspath(os.path.dirname(sys.argv[0])) 
+barinstallpath = os.environ.get("BAR_INSTALL_PATH") or os.path.abspath(os.path.dirname(sys.argv[0])) 
 cwd = os.getcwd()
 #This is needed for double-click launches, as then the CWD is wherever the demo file is
 os.chdir(barinstallpath)
@@ -84,7 +84,7 @@ def find_linux_launcher_binary():
 if platform.system() == 'Windows':
     engine_binary = 'spring.exe'
     prd_binary = 'pr-downloader.exe'
-    datafolder = 'data'
+    datafolder = os.environ.get("BAR_DATA_DIR", 'data')
     launcher_binary_display = launcher_binary = 'Beyond-All-Reason.exe'
     engine_download_baseurl = 'https://github.com/beyond-all-reason/spring/releases/download/spring_bar_%7BBAR105%7D{enginebaseversion}/spring_bar_.BAR105.{enginebaseversion}_windows-64-minimal-portable.7z'
     engine_download_baseurl_new = 'https://github.com/beyond-all-reason/spring/releases/download/{enginebaseversion}/spring_bar_.{releaseID}.{enginebaseversion}_windows-64-minimal-portable.7z'

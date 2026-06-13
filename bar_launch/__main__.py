@@ -87,11 +87,17 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     if run_gui:
         # The Tk GUI still lives in BAR_Debug_Launcher.py for now; spawn it.
+        # It has no CLI of its own, so hand it --data-dir/--bar-install via env.
         here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         gui_script = os.path.join(here, "BAR_Debug_Launcher.py")
         if not os.path.exists(gui_script):
             raise SystemExit(f"GUI entry point not found at {gui_script}")
-        return subprocess.call([sys.executable, gui_script])
+        env = dict(os.environ)
+        if args.data_dir:
+            env["BAR_DATA_DIR"] = args.data_dir
+        if args.bar_install:
+            env["BAR_INSTALL_PATH"] = args.bar_install
+        return subprocess.call([sys.executable, gui_script], env=env)
 
     ctx = build_context(
         barinstallpath=args.bar_install,

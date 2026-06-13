@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import platform
 import shlex
 import subprocess
 import sys
@@ -16,6 +17,17 @@ from typing import Optional
 from .core import build_context
 from .engine_cmd import build_runcmd
 from .intents import Intent, default_boot, resolve_intent
+
+
+def _resolve_bar_install(args) -> Optional[str]:
+    if args.bar_install:
+        return args.bar_install
+    # Windows install layout is <install>\Beyond-All-Reason.exe + <install>\data.
+    # The WSL shim passes --data-dir but no --bar-install; derive the install
+    # root so launcher boots resolve the .exe instead of argv[0]'s dir.
+    if args.data_dir and platform.system() == "Windows":
+        return os.path.dirname(os.path.normpath(args.data_dir))
+    return None
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -84,6 +96,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     # its own default-resolution logic) but they shouldn't be a trapdoor that
     # silently bypasses it. When the user wants headless, they say so.
     run_gui = args.gui if args.gui is not None else (not args.print_cmd)
+    bar_install = _resolve_bar_install(args)
 
     if run_gui:
         # The Tk GUI still lives in BAR_Debug_Launcher.py for now; spawn it.
@@ -95,12 +108,12 @@ def main(argv: Optional[list[str]] = None) -> int:
         env = dict(os.environ)
         if args.data_dir:
             env["BAR_DATA_DIR"] = args.data_dir
-        if args.bar_install:
-            env["BAR_INSTALL_PATH"] = args.bar_install
+        if bar_install:
+            env["BAR_INSTALL_PATH"] = bar_install
         return subprocess.call([sys.executable, gui_script], env=env)
 
     ctx = build_context(
-        barinstallpath=args.bar_install,
+        barinstallpath=bar_install,
         datafolder=args.data_dir,
         launcher_binary=args.launcher_binary,
     )

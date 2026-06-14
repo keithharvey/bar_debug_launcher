@@ -18,4 +18,4 @@ bar-launch = "bar_launch.__main__:main"
 
 [tool.setuptools]
 packages = ["bar_launch"]
-py-modules = ["slpp", "demoparser", "parse_demo_file", "BAR_Debug_Launcher"]
+py-modules = ["slpp", "demoparser", "parse_demo_file", "script", "BAR_Debug_Launcher"]

@@ -25,7 +25,7 @@ from parse_demo_file import Parse_demo_file
 
 from slpp import slpp
 
-from bar_launch.core import Context, find_linux_launcher_binary as _find_linux_launcher_binary
+from bar_launch.core import Context, find_linux_launcher_binary as _find_linux_launcher_binary, host_cmd_prefix
 from bar_launch.engine_cmd import build_runcmd
 from bar_launch.intents import (
     BOOT_CHOICES,
@@ -453,7 +453,7 @@ def try_start_replay(replayfilepath):
     #5. start the demo 
     runcmd = f'"{os.path.join(barinstallpath, datafolder,"engine",enginedir, engine_binary)}"  --isolation --write-dir "{os.path.join(barinstallpath, datafolder)}" "{savedreplaypath}"'
     print ("Launching engine for replay with:", runcmd)
-    subprocess.Popen(shlex.split(runcmd),close_fds=True )
+    subprocess.Popen(host_cmd_prefix() + shlex.split(runcmd),close_fds=True )
     #print (demo.header)
 
 
@@ -507,6 +507,34 @@ class _Tooltip:
 
 if len(sys.argv) < 2: # no arguments passed, use GUI
     root = tk.Tk()
+    # Defer to the OS: a healthy desktop Tk already honors the fontconfig default
+    # family and the display DPI (tk scaling), so we leave those alone on KDE /
+    # GNOME / etc. But some Tk builds (notably Homebrew's on Linux) can't see the
+    # system fonts and fall back to the non-scalable X11 'fixed' bitmap -- detect
+    # that and pin to the best available scalable family so text renders & scales.
+    # BAR_TK_SCALING=<float> overrides the DPI-derived scaling for manual tuning.
+    import tkinter.font as _tkfont
+    _avail = {f.lower(): f for f in _tkfont.families(root)}
+    def _pick_family(prefs, fallback):
+        for _p in prefs:
+            if _p.lower() in _avail:
+                return _avail[_p.lower()]
+        return fallback
+    _default = _tkfont.nametofont('TkDefaultFont')
+    if _default.actual('family').lower() == 'fixed':
+        UI_SANS = _pick_family(['DejaVu Sans', 'Noto Sans', 'Liberation Sans', 'Helvetica', 'Arial'], 'Liberation Sans')
+        UI_MONO = _pick_family(['DejaVu Sans Mono', 'Liberation Mono', 'Noto Sans Mono', 'Courier New'], 'Liberation Mono')
+        for _name in _tkfont.names(root):
+            _tkfont.nametofont(_name).configure(family=(UI_MONO if _name == 'TkFixedFont' else UI_SANS))
+    else:
+        UI_SANS = _default.actual('family')
+        UI_MONO = _tkfont.nametofont('TkFixedFont').actual('family')
+    _scale_override = os.environ.get('BAR_TK_SCALING')
+    if _scale_override:
+        try:
+            root.tk.call('tk', 'scaling', float(_scale_override))
+        except (ValueError, tk.TclError):
+            pass
     # ----- Window-size floors (single edit point) -------------------------
     # Final window size is max(MIN_*, measured content size). Edit these to
     # taste -- if you want a smaller window, lower the floor. The measure
@@ -538,7 +566,7 @@ if len(sys.argv) < 2: # no arguments passed, use GUI
     style.configure('Hint.TLabel', foreground='#666')
     style.configure('Link.TLabel', foreground='#2563eb')
     style.configure('Section.TLabelframe', padding=10)
-    style.configure('Section.TLabelframe.Label', font=('TkDefaultFont', 10, 'bold'))
+    style.configure('Section.TLabelframe.Label', font=(UI_SANS, 10, 'bold'))
 
     PAD = 8
 
@@ -566,8 +594,8 @@ if len(sys.argv) < 2: # no arguments passed, use GUI
     _link = ttk.Label(header, text="GitHub ↗", style='Link.TLabel', cursor='hand2')
     _link.grid(row=0, column=1, sticky=tk.E, padx=(PAD, 0))
     _link.bind('<Button-1>', lambda e: webbrowser.open(_GH_URL))
-    _link.bind('<Enter>', lambda e: _link.configure(font=('TkDefaultFont', 9, 'underline')))
-    _link.bind('<Leave>', lambda e: _link.configure(font=('TkDefaultFont', 9)))
+    _link.bind('<Enter>', lambda e: _link.configure(font=(UI_SANS, 9, 'underline')))
+    _link.bind('<Leave>', lambda e: _link.configure(font=(UI_SANS, 9)))
 
     # ---------------------------------------------------------------------
     # Intent-first config: Engine, then (Play, Source, Boot, Map) in a
@@ -700,7 +728,7 @@ if len(sys.argv) < 2: # no arguments passed, use GUI
     # width=1 so Tk doesn't claim the default 80-column natural width as the
     # window's required width -- the LabelFrame stretches via fill=tk.X and
     # the inner Text follows. Without this the Text alone forces ~560px.
-    cmdtext = tk.Text(cmd_frame, height=4, width=1, font=("Courier", 9),
+    cmdtext = tk.Text(cmd_frame, height=4, width=1, font=(UI_MONO, 9),
                       wrap=tk.WORD, relief=tk.FLAT, borderwidth=0,
                       background="#f5f5f5")
     cmdtext.pack(fill=tk.X)
@@ -708,7 +736,7 @@ if len(sys.argv) < 2: # no arguments passed, use GUI
     # Modoptions
     mod_frame = ttk.LabelFrame(root, text='Additional modoptions', style='Section.TLabelframe')
     mod_frame.grid(row=3, column=0, sticky=tk.EW, padx=PAD, pady=PAD // 2)
-    modoptionstb = tk.Text(mod_frame, height=3, width=1, font=("Courier", 9),
+    modoptionstb = tk.Text(mod_frame, height=3, width=1, font=(UI_MONO, 9),
                            wrap=tk.WORD, relief=tk.FLAT, borderwidth=1)
     modoptionstb.pack(fill=tk.X)
 
@@ -948,7 +976,7 @@ if len(sys.argv) < 2: # no arguments passed, use GUI
     def startspring():
         gencmd(None)
         print('starting spring with', runcmd)
-        subprocess.Popen(shlex.split(runcmd), close_fds=True)
+        subprocess.Popen(host_cmd_prefix() + shlex.split(runcmd), close_fds=True)
 
     button_frame = ttk.Frame(root)
     button_frame.grid(row=4, column=0, sticky=tk.EW, padx=PAD, pady=(PAD // 2, PAD))
@@ -958,7 +986,7 @@ if len(sys.argv) < 2: # no arguments passed, use GUI
                command=startreplay).grid(row=0, column=0, sticky=tk.EW, padx=(0, PAD // 2))
     # Primary action: emphasize via ttk.Style (TButton can't easily get a
     # bold variant without a custom style, so we use a slightly bolder label).
-    style.configure('Primary.TButton', font=('TkDefaultFont', 10, 'bold'))
+    style.configure('Primary.TButton', font=(UI_SANS, 10, 'bold'))
     ttk.Button(button_frame, text="▶  Launch with selected settings",
                style='Primary.TButton',
                command=startspring).grid(row=0, column=1, sticky=tk.EW, padx=(PAD // 2, 0))

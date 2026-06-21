@@ -14,7 +14,7 @@ import subprocess
 import sys
 from typing import Optional
 
-from .core import build_context
+from .core import build_context, host_cmd_prefix
 from .engine_cmd import build_runcmd
 from .intents import Intent, default_boot, resolve_intent
 
@@ -126,7 +126,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         return 0
 
     print(f"Launching ({label!r} on engine {engine_version!r}):", cmd)
-    subprocess.Popen(shlex.split(cmd), close_fds=True)
+    subprocess.Popen(host_cmd_prefix() + shlex.split(cmd), close_fds=True)
     return 0
 
 

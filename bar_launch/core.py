@@ -7,12 +7,27 @@ from __future__ import annotations
 import os
 import platform
 import re
+import shutil
 import subprocess
 import sys
 from dataclasses import dataclass, field
 from typing import Optional
 
 from slpp import slpp
+
+
+def host_cmd_prefix():
+    """Prefix to run a host binary from inside a distrobox/toolbox container.
+
+    The engine/AppImage needs host-side FUSE + GPU userspace, so when we're
+    containerized we run it on the host. Empty list when running natively.
+    """
+    if os.path.exists("/run/.containerenv") or os.environ.get("CONTAINER_ID"):
+        for tool in ("distrobox-host-exec", "host-spawn"):
+            path = shutil.which(tool)
+            if path:
+                return [path]
+    return []
 
 
 # ---------------------------------------------------------------------------

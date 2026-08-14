@@ -14,6 +14,7 @@ the launcher already understands. Tests live in tests/test_intents.py.
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Optional
 
@@ -75,31 +76,42 @@ def resolve_intent(intent: Intent, modinfos: dict[str, dict]) -> tuple[str, dict
             raise KeyError(f"expected {label!r} in modinfos but it's missing")
         return label, modinfos[label]
 
-    # Local -> entries discovered by the [LOCAL] scan in build_context.
+    # Local -> entries discovered by the [LOCAL] scan in build_context. The
+    # scan labels checkouts f"[LOCAL] {gamedir}" for *any* directory name, so
+    # match on the [LOCAL] tag + modtype rather than hardcoded checkout names:
+    #   modtype 1 = game, modtype 5 = chobby engine-direct, and for every
+    #   modtype-5 checkout the scan also adds a paired modtype-0
+    #   "[LOCAL] Spring-launcher with ..." entry for launcher boots.
     if intent.source == "local":
         if intent.play == "chobby":
-            # The local-games scan tags chobby-style entries (modtype 5).
             wanted_modtype = "5" if intent.boot == "engine" else "0"
-            prefix_engine = "[LOCAL] BYAR-Chobby"
-            prefix_launcher = "[LOCAL] Spring-launcher with BYAR-Chobby"
         else:  # bar
             wanted_modtype = "1"
-            prefix_engine = "[LOCAL] Beyond-All-Reason"
-            prefix_launcher = None
-        prefix = prefix_launcher if intent.boot == "launcher" and prefix_launcher else prefix_engine
         for label, mi in modinfos.items():
-            if label.startswith(prefix) and str(mi.get("modtype", "")) == wanted_modtype:
+            if label.startswith("[LOCAL]") and str(mi.get("modtype", "")) == wanted_modtype:
                 return label, mi
         raise KeyError(
             f"no [LOCAL] entry matches play={intent.play} boot={intent.boot}; "
             f"is a checkout linked into <data-dir>/games/?"
         )
 
-    # Pinned -> match $VERSION-tagged entries by substring of intent.version.
+    # Pinned -> match $VERSION-tagged entries by intent.version. Prefer an
+    # exact whitespace-delimited token match so e.g. version "2025.04.1" can't
+    # silently resolve to "... 2025.04.10 $VERSION"; fall back to substring so
+    # partial pins like "2025.04" keep working.
     assert intent.source == "pinned" and intent.version
     needle = intent.version
     wanted_modtype = "1" if intent.play == "bar" else ("0" if intent.boot == "launcher" else "5")
+    token_re = re.compile(rf"(?<!\S){re.escape(needle)}(?!\S)")
+    exact_match = None
+    substring_match = None
     for label, mi in modinfos.items():
-        if needle in label and str(mi.get("modtype", "")) == wanted_modtype:
-            return label, mi
+        if str(mi.get("modtype", "")) != wanted_modtype or needle not in label:
+            continue
+        if exact_match is None and token_re.search(label):
+            exact_match = (label, mi)
+        if substring_match is None:
+            substring_match = (label, mi)
+    if exact_match or substring_match:
+        return exact_match or substring_match
     raise KeyError(f"no entry containing {needle!r} found for play={intent.play} boot={intent.boot}")

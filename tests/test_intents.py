@@ -109,6 +109,36 @@ def test_pinned_no_match_raises():
         resolve_intent(Intent("bar", "pinned", "engine", version="9999.99"), FIXTURE_MODINFOS)
 
 
+def test_pinned_prefers_exact_token_over_substring():
+    # '2025.04.1' is a substring of '2025.04.10'; an exact token match must
+    # win even when the substring-only entry comes first in insertion order.
+    modinfos = {
+        "Beyond All Reason 2025.04.10 $VERSION": {"modtype": "1", "name": "Beyond All Reason 2025.04.10"},
+        "Beyond All Reason 2025.04.1 $VERSION": {"modtype": "1", "name": "Beyond All Reason 2025.04.1"},
+    }
+    label, mi = resolve_intent(Intent("bar", "pinned", "engine", version="2025.04.1"), modinfos)
+    assert label == "Beyond All Reason 2025.04.1 $VERSION"
+    # Partial pins still fall back to substring matching.
+    label, _ = resolve_intent(Intent("bar", "pinned", "engine", version="2025.04"), modinfos)
+    assert "2025.04" in label
+
+
+def test_local_matches_any_checkout_dir_name():
+    # The games/ scan labels checkouts '[LOCAL] {gamedir}' for any directory
+    # name; resolution must not depend on hardcoded checkout names.
+    modinfos = {
+        "[LOCAL] my-bar-fork.sdd": {"modtype": "1", "name": "My BAR Fork $VERSION"},
+        "[LOCAL] chobby-dev": {"modtype": "5", "name": "Chobby Dev $VERSION"},
+        "[LOCAL] Spring-launcher with chobby-dev": {"modtype": "0", "name": "Chobby Dev $VERSION"},
+    }
+    label, mi = resolve_intent(Intent("bar", "local", "engine"), modinfos)
+    assert label == "[LOCAL] my-bar-fork.sdd" and mi["modtype"] == "1"
+    label, mi = resolve_intent(Intent("chobby", "local", "engine"), modinfos)
+    assert label == "[LOCAL] chobby-dev" and mi["modtype"] == "5"
+    label, mi = resolve_intent(Intent("chobby", "local", "launcher"), modinfos)
+    assert label == "[LOCAL] Spring-launcher with chobby-dev" and mi["modtype"] == "0"
+
+
 # ---------------------------------------------------------------------------
 # Full permutation grid: 3 play x 3 source x 2 boot = 18 cells.
 #

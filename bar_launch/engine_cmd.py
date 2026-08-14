@@ -106,15 +106,25 @@ def build_runcmd(
     if enginepath is None:
         raise KeyError(f"engine {engine_version!r} not in ctx.engines")
 
+    # Anchor relative side-effect files under barinstallpath so the file we
+    # write is the same file the command references. (The GUI chdirs to
+    # barinstallpath, so this is a no-op there; the headless CLI never chdirs,
+    # and previously wrote the config to cwd while pointing the launcher at a
+    # nonexistent/stale barinstallpath copy.)
+    if not os.path.isabs(script_path):
+        script_path = os.path.join(ctx.barinstallpath, script_path)
+    if not os.path.isabs(config_path):
+        config_path = os.path.join(ctx.barinstallpath, config_path)
+
     mtype = modinfo["modtype"]
     if mtype == "5":
         return f'"{enginepath}"  --isolation --write-dir "{write_dir}" --menu "{modinfo["name"]}"'
     if mtype == "1":
         if mapname and mapname != "Ill choose my own once ingame":
             write_start_script(modopts, mapname, modinfo["name"], script_path)
-            return f'"{enginepath}"  --isolation --write-dir "{write_dir}" {script_path}'
+            return f'"{enginepath}"  --isolation --write-dir "{write_dir}" "{script_path}"'
         return f'"{enginepath}"  --isolation --write-dir "{write_dir}"'
     if mtype == "0":
         write_dev_lobby_config(engine_version, modinfo["name"], config_path)
-        return f'"{os.path.join(ctx.barinstallpath, ctx.launcher_binary)}" -c "{os.path.join(ctx.barinstallpath, config_path)}"'
+        return f'"{os.path.join(ctx.barinstallpath, ctx.launcher_binary)}" -c "{config_path}"'
     raise ValueError(f"unknown modtype {mtype!r}")

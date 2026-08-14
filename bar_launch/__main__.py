@@ -25,8 +25,11 @@ def _resolve_bar_install(args) -> Optional[str]:
     # Windows install layout is <install>\Beyond-All-Reason.exe + <install>\data.
     # The WSL shim passes --data-dir but no --bar-install; derive the install
     # root so launcher boots resolve the .exe instead of argv[0]'s dir.
+    # abspath first: dirname of a relative single-component path ("data")
+    # would otherwise be "", which build_context would take as a literal
+    # install path and resolve everything against cwd with a bare .exe name.
     if args.data_dir and platform.system() == "Windows":
-        return os.path.dirname(os.path.normpath(args.data_dir))
+        return os.path.dirname(os.path.abspath(os.path.normpath(args.data_dir)))
     return None
 
 
@@ -110,6 +113,10 @@ def main(argv: Optional[list[str]] = None) -> int:
             env["BAR_DATA_DIR"] = args.data_dir
         if bar_install:
             env["BAR_INSTALL_PATH"] = bar_install
+        if args.launcher_binary:
+            # The GUI's launcher discovery honors BAR_APPIMAGE_PATH (file or
+            # directory), so --launcher-binary rides along on that.
+            env["BAR_APPIMAGE_PATH"] = args.launcher_binary
         return subprocess.call([sys.executable, gui_script], env=env)
 
     ctx = build_context(

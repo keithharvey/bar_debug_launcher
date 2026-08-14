@@ -79,7 +79,7 @@ def find_linux_datadir() -> str:
 
 # Order:
 #   1. $BAR_APPIMAGE_PATH if set and pointing at an existing file
-#   2. Scan cwd for an AppImage matching the case-insensitive regex
+#   2. Scan barinstallpath, then cwd, for an AppImage matching the regex
 #   3. Fallback string so the GUI still has *something* to display
 _APPIMAGE_RE = re.compile(r"^beyond[-_]?all[-_]?reason.*\.appimage$", re.IGNORECASE)
 
@@ -91,8 +91,10 @@ def find_linux_launcher_binary(barinstallpath: Optional[str] = None) -> str:
     #      this lets users set BAR_APPIMAGE_PATH=~/Applications/ or =~/apps/BAR/
     #      without having to know the AppImage's exact filename, which churns
     #      with each release.
-    #   3. cwd / barinstallpath scan, for the standalone "drop the launcher
-    #      next to the AppImage and double-click" workflow.
+    #   3. barinstallpath / cwd scan, for the standalone "drop the launcher
+    #      next to the AppImage and double-click" workflow. The explicitly
+    #      configured install path outranks cwd so a stray AppImage in
+    #      whatever directory the CLI happens to run from can't shadow it.
     candidates = []
     env_path = os.environ.get("BAR_APPIMAGE_PATH")
     if env_path:
@@ -102,9 +104,9 @@ def find_linux_launcher_binary(barinstallpath: Optional[str] = None) -> str:
         if os.path.isdir(expanded):
             candidates.append(expanded)
 
-    candidates.append(os.getcwd())
     if barinstallpath:
         candidates.append(barinstallpath)
+    candidates.append(os.getcwd())
     for d in candidates:
         if not os.path.isdir(d):
             continue
@@ -118,9 +120,8 @@ def find_linux_launcher_binary(barinstallpath: Optional[str] = None) -> str:
 # Engine + cache discovery (returns dicts, no global state).
 # ---------------------------------------------------------------------------
 
-def findengines(enginefolder: str) -> tuple[dict[str, str], dict]:
+def findengines(enginefolder: str) -> dict[str, str]:
     engines: dict[str, str] = {}
-    enginedirs: dict = {}
     if os.path.exists(enginefolder):
         for engineversion in os.listdir(enginefolder):
             enginedir = os.path.join(enginefolder, engineversion)
@@ -130,7 +131,7 @@ def findengines(enginefolder: str) -> tuple[dict[str, str], dict]:
                 engines[engineversion] = enginepath
     if not engines:
         engines["NO ENGINES FOUND!"] = "NO ENGINES FOUND!"
-    return engines, enginedirs
+    return engines
 
 
 def parsecache(path: str) -> tuple[dict[str, str], dict[str, str], dict[str, str]]:
@@ -202,7 +203,6 @@ class Context:
     datafolder: str
     launcher_binary: str
     engines: dict[str, str] = field(default_factory=dict)
-    enginedirs: dict = field(default_factory=dict)
     maps: dict[str, str] = field(default_factory=dict)
     games: dict[str, str] = field(default_factory=dict)
     menus: dict[str, str] = field(default_factory=dict)
@@ -219,16 +219,10 @@ def build_context(
         barinstallpath = os.path.abspath(os.path.dirname(sys.argv[0]))
 
     if datafolder is None:
-        if platform.system() == "Windows":
-            datafolder = "data"
-        else:
-            datafolder = find_linux_datadir()
+        datafolder = default_datafolder or find_linux_datadir()
 
     if launcher_binary is None:
-        if platform.system() == "Windows":
-            launcher_binary = "Beyond-All-Reason.exe"
-        else:
-            launcher_binary = find_linux_launcher_binary(barinstallpath)
+        launcher_binary = default_launcher_binary or find_linux_launcher_binary(barinstallpath)
 
     ctx = Context(
         barinstallpath=barinstallpath,
@@ -237,7 +231,7 @@ def build_context(
     )
 
     ctx.maps, ctx.games, ctx.menus = parsecache(os.path.join(barinstallpath, datafolder, "cache"))
-    ctx.engines, ctx.enginedirs = findengines(os.path.join(barinstallpath, datafolder, "engine"))
+    ctx.engines = findengines(os.path.join(barinstallpath, datafolder, "engine"))
 
     modinfos: dict[str, dict] = {}
     modinfos["Spring-launcher with rapid://byar-chobby:test"] = {"modtype": "0", "name": "rapid://byar-chobby:test"}
@@ -252,7 +246,7 @@ def build_context(
         if "$VERSION" in gamename:
             modinfos[gamename] = {"modtype": "1", "name": gamename}
 
-    gamespath = os.path.join(datafolder, "games")
+    gamespath = os.path.join(barinstallpath, datafolder, "games")
     if os.path.exists(gamespath):
         for gamedir in os.listdir(gamespath):
             gamepath = os.path.join(gamespath, gamedir)

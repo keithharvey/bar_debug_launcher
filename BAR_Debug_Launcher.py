@@ -25,7 +25,18 @@ from parse_demo_file import Parse_demo_file
 
 from slpp import slpp
 
-from bar_launch.core import Context, find_linux_launcher_binary as _find_linux_launcher_binary, host_cmd_prefix
+from bar_launch.core import (
+    build_context,
+    engine_binary,
+    engine_download_baseurl,
+    engine_download_baseurl_new,
+    engine_download_baseurl_newest,
+    find_linux_datadir,
+    find_linux_launcher_binary as _find_linux_launcher_binary,
+    host_cmd_prefix,
+    launcher_binary_display,
+    prd_binary,
+)
 from bar_launch.engine_cmd import build_runcmd
 from bar_launch.intents import (
     BOOT_CHOICES,
@@ -60,222 +71,41 @@ if False:
 
 #maps = ['Ill choose my own once ingame']
 
-def find_linux_datadir():
-    # Searches for the BAR install directory in the ~same was as launcher
-    # and returns absolute path
-    try:
-        documents = subprocess.check_output(
-            ['xdg-user-dir', 'DOCUMENTS'], encoding='utf-8').strip()
-    except:
-        documents = os.path.expanduser("~")  # Yep, that's fallback
-    if os.path.exists(os.path.join(documents, 'Beyond All Reason')):
-        return os.path.join(documents, 'Beyond All Reason')
-
-    state_home = os.getenv('XDG_STATE_HOME',
-        default=os.path.join(os.path.expanduser("~"), '.local', 'state'))
-    return os.path.join(state_home, 'Beyond All Reason')
-
 def find_linux_launcher_binary():
     # Honors $BAR_APPIMAGE_PATH and --launcher-binary first; falls back to
     # the legacy cwd scan so the standalone "drop next to the AppImage and
     # double-click" workflow keeps working.
     return _find_linux_launcher_binary(barinstallpath)
 
+# Platform constants (engine/pr-downloader binary names, download URL
+# templates, launcher display name) come from bar_launch.core so the GUI and
+# CLI can't drift; core raises on unsupported platforms at import time.
 if platform.system() == 'Windows':
-    engine_binary = 'spring.exe'
-    prd_binary = 'pr-downloader.exe'
     datafolder = os.environ.get("BAR_DATA_DIR", 'data')
-    launcher_binary_display = launcher_binary = 'Beyond-All-Reason.exe'
-    engine_download_baseurl = 'https://github.com/beyond-all-reason/spring/releases/download/spring_bar_%7BBAR105%7D{enginebaseversion}/spring_bar_.BAR105.{enginebaseversion}_windows-64-minimal-portable.7z'
-    engine_download_baseurl_new = 'https://github.com/beyond-all-reason/spring/releases/download/{enginebaseversion}/spring_bar_.{releaseID}.{enginebaseversion}_windows-64-minimal-portable.7z'
-    engine_download_baseurl_newest = 'https://github.com/beyond-all-reason/RecoilEngine/releases/download/{enginebaseversion}/recoil_{enginebaseversion}_amd64-windows.7z'
-elif platform.system() == 'Linux':
-    engine_binary = 'spring'
-    prd_binary = 'pr-downloader'
-    # Later we depend on that os.join(barinstallpath, datafolder) returns
-    # datafolder when datafolder is absolute path.
-    datafolder = find_linux_datadir()
-    launcher_binary = find_linux_launcher_binary()
-    launcher_binary_display= "Beyond-All-Reason AppImage"
-    engine_download_baseurl = 'https://github.com/beyond-all-reason/spring/releases/download/spring_bar_%7BBAR105%7D{enginebaseversion}/spring_bar_.BAR105.{enginebaseversion}_linux-64-minimal-portable.7z'
-    engine_download_baseurl_new = 'https://github.com/beyond-all-reason/spring/releases/download/{enginebaseversion}/spring_bar_.{releaseID}.{enginebaseversion}_linux-64-minimal-portable.7z'
-    engine_download_baseurl_newest = 'https://github.com/beyond-all-reason/RecoilEngine/releases/download/{enginebaseversion}/recoil_{enginebaseversion}_amd64-linux.7z'
+    launcher_binary = 'Beyond-All-Reason.exe'
 else:
-    raise Exception('Unsupported platform')
+    # Later we depend on that os.join(barinstallpath, datafolder) returns
+    # datafolder when datafolder is absolute path. BAR_DATA_DIR is how
+    # `python -m bar_launch --data-dir ...` hands the data dir to the GUI.
+    datafolder = os.environ.get("BAR_DATA_DIR") or find_linux_datadir()
+    launcher_binary = find_linux_launcher_binary()
 
 
-archivecache = {} # maps gamename/mapname to filename
 maps = {}
 games = {}
 menus = {}
 engines = {}
 modinfos = {}
-
-scriptbase = """
-[game]
-{
-    [allyteam1]
-    {
-        numallies=0;
-    }
-    [team1]
-    {
-        teamleader=0;
-        allyteam=1;
-    }
-    [ai0]
-    {
-        shortname=NullAI;
-        name=NullAI;
-        version=0.1;
-        team=1;
-        host=0;
-    }
-    [modoptions]
-    {
-        %s
-    }
-    [allyteam0]
-    {
-        numallies=0;
-    }
-    [team0]
-    {
-        teamleader=0;
-        allyteam=0;
-    }
-    [player0]
-    {
-        team=0;
-        name=DebugLauncher;
-    }
-    mapname=%s;
-    myplayername=DebugLauncher;
-    ishost=1;
-    gametype=%s;
-    nohelperais=0;
-}"""
-
-# returns a dict of engineversion:absolutespringexepath
-def findengines(enginefolder):
-    engines = {}
-    enginedirs  = {}
-    if os.path.exists(enginefolder):
-        for engineversion in os.listdir(enginefolder):
-            enginedir = os.path.join(enginefolder, engineversion)
-            if os.path.isdir(enginedir) and os.path.exists(os.path.join(enginedir, engine_binary)):
-                enginepath = os.path.join(enginedir, engine_binary)
-                print(f"Found engine version {engineversion} in path: {enginepath}")
-                engines[engineversion] = enginepath
-    if len(engines) == 0:
-        engines["NO ENGINES FOUND!"] = "NO ENGINES FOUND!"
-    return engines,enginedirs
-
-# returns three dicts from archivecach
-def parsecache(path):
-    global archivecache           
-    maps = {} # key archive name to value filename
-    games = {}
-    menus = {}
-    try:
-        cachefiles = []
-        for item in os.listdir(path):
-            itempath = os.path.join(path, item)
-            if os.path.isdir(itempath):
-                for archivecachefile in os.listdir(itempath):
-                    if 'archivecache' in archivecachefile.lower() and archivecachefile.lower().endswith('.lua'):
-                        archivecachefilepath = os.path.join(itempath, archivecachefile)
-                        lastmodified = os.path.getmtime(archivecachefilepath)
-                        print ("Found a cache file", item, archivecachefile, "last modified:", lastmodified)
-                        cachefiles.append((archivecachefilepath, lastmodified))
-            elif 'archivecache' in item.lower() and item.lower().endswith('.lua'):
-                lastmodified = os.path.getmtime(itempath)
-                print ("Found a cache file (direct)", item, "last modified:", lastmodified)
-                cachefiles.append((itempath, lastmodified))
-
-        if len(cachefiles) > 0:
-            cachefiles = sorted(cachefiles, key = lambda x: x[1], reverse = True)
-            archivecachefilepath = cachefiles[0][0]
-            print ("Loading Archive Cache File:", archivecachefilepath)
-            archivecachecontents = open(archivecachefilepath).read()
-            archivetable = '{' + archivecachecontents.partition('{')[2].rpartition('}')[0] +  '}'
-            archivetable = slpp.decode(archivetable)
-            for archive in archivetable['archives']:
-                if 'archivedata' in archive and 'modtype' in archive['archivedata']:
-                    archivedata = archive['archivedata']
-                    modtype = archivedata['modtype']
-                    if modtype == 3: # map
-                        maps[archivedata['name']] = archive['name']
-                    elif modtype == 5: #menu
-                        menus[archivedata['name']] = archive['name']
-                    elif modtype == 1: #game
-                        games[archivedata['name']] = archive['name']
-            print (f"Found {len(maps)} maps, {len(games)} games, {len(menus)} menus")
-    except Exception as e:
-        print ("parsecache error, dont code blind!", e)
-    return maps, games, menus
-
-def parsemodinfo(path):
-    try:
-        with open(path, 'r') as f:
-            contents = f.read()
-        table_str = '{' + contents.partition('{')[2].rpartition('}')[0] + '}'
-        return slpp.decode(table_str)
-    except Exception as e:
-        print(f"Error parsing {path}: {e}")
-        return None
+ctx = None  # bar_launch.core.Context built by refresh()
 
 def refresh():
-    global modinfos
-    #global enginepaths
-    #global enginedirs
-    global maps, games, menus, engines, enginedirs
-    maps, games, menus = parsecache(os.path.join(barinstallpath, datafolder, "cache"))
-    engines, enginedirs = findengines(os.path.join(barinstallpath, datafolder, "engine"))
-
-    #parsemaps()
-    # check for bar.sdd
-    
-    modinfos['Spring-launcher with rapid://byar-chobby:test'] = {'modtype': '0', 'name': 'rapid://byar-chobby:test'}
-    modinfos['Latest BYAR Chobby Lobby: rapid://byar-chobby:test'] = {'name': 'rapid://byar-chobby:test', 'version': '', 'modtype': '5'}
-    modinfos['Latest BAR Game: rapid://byar:test'] = {'name': 'rapid://byar:test', 'version': '', 'modtype': '1'}
-    for menuname in menus.keys():
-        if '$VERSION' in menuname:
-            modinfos[f'Spring-launcher with {menuname}'] = {'modtype': '0', 'name': menuname}
-            modinfos[f'{menuname} (no launcher)'] = {'modtype': '5', 'name': menuname}
-    for gamename in games.keys():
-        if '$VERSION' in gamename:
-            modinfos[gamename] = {'modtype': '1', 'name': gamename}
-
-    # Surface locally-checked-out games (anything symlinked or hardlinked
-    # into <data-dir>/games/) as [LOCAL] entries so the dropdown
-    # distinguishes them from rapid:// builds.
-    gamespath = os.path.join(datafolder, 'games')
-    if os.path.exists(gamespath):
-        for gamedir in os.listdir(gamespath):
-            gamepath = os.path.join(gamespath, gamedir)
-            if not os.path.isdir(gamepath):
-                continue
-            modinfopath = os.path.join(gamepath, 'modinfo.lua')
-            if not os.path.exists(modinfopath):
-                continue
-            modinfo = parsemodinfo(modinfopath)
-            if not (modinfo and 'name' in modinfo):
-                continue
-            base_name = modinfo['name']
-            version = modinfo.get('version', '')
-            if version == '$VERSION' and '$VERSION' not in base_name:
-                name = f"{base_name} $VERSION"
-            else:
-                name = base_name
-            mtype = str(modinfo.get('modtype', '1'))
-            display_name = f"[LOCAL] {gamedir}"
-            modinfos[display_name] = {'modtype': mtype, 'name': name}
-            if mtype == '5':
-                modinfos[f"[LOCAL] Spring-launcher with {gamedir}"] = {'modtype': '0', 'name': name}
-
-    for k, v in modinfos.items():
-        print(k, v)
+    """(Re)scan the BAR install via the shared bar_launch.core.build_context
+    and mirror the results into the GUI's module globals."""
+    global ctx, maps, games, menus, engines, modinfos
+    ctx = build_context(barinstallpath, datafolder, launcher_binary)
+    maps, games, menus = ctx.maps, ctx.games, ctx.menus
+    engines = ctx.engines
+    modinfos = ctx.modinfos
 
 refresh()
 
@@ -514,14 +344,16 @@ if len(sys.argv) < 2: # no arguments passed, use GUI
     # that and pin to the best available scalable family so text renders & scales.
     # BAR_TK_SCALING=<float> overrides the DPI-derived scaling for manual tuning.
     import tkinter.font as _tkfont
-    _avail = {f.lower(): f for f in _tkfont.families(root)}
-    def _pick_family(prefs, fallback):
-        for _p in prefs:
-            if _p.lower() in _avail:
-                return _avail[_p.lower()]
-        return fallback
     _default = _tkfont.nametofont('TkDefaultFont')
     if _default.actual('family').lower() == 'fixed':
+        # Enumerating every installed family is slow on font-heavy systems,
+        # so only pay for it on the broken-Tk path that actually needs it.
+        _avail = {f.lower(): f for f in _tkfont.families(root)}
+        def _pick_family(prefs, fallback):
+            for _p in prefs:
+                if _p.lower() in _avail:
+                    return _avail[_p.lower()]
+            return fallback
         UI_SANS = _pick_family(['DejaVu Sans', 'Noto Sans', 'Liberation Sans', 'Helvetica', 'Arial'], 'Liberation Sans')
         UI_MONO = _pick_family(['DejaVu Sans Mono', 'Liberation Mono', 'Noto Sans Mono', 'Courier New'], 'Liberation Mono')
         for _name in _tkfont.names(root):
@@ -611,15 +443,6 @@ if len(sys.argv) < 2: # no arguments passed, use GUI
     }
     PLAY_BY_LABEL = {v: k for k, v in PLAY_LABELS.items()}
 
-    def _local_available(play):
-        if play == "replay":
-            return False
-        try:
-            resolve_intent(Intent(play, "local", default_boot(play)), modinfos)
-            return True
-        except (KeyError, ValueError):
-            return False
-
     def _pinned_versions(play):
         versions = set()
         if play == "chobby":
@@ -639,18 +462,17 @@ if len(sys.argv) < 2: # no arguments passed, use GUI
         return sorted(versions, reverse=True)
 
     def _local_source_paths(play):
+        # Derived from modinfos (populated once by refresh()) rather than
+        # re-listing <data-dir>/games on every call -- this runs on the
+        # tooltip hover path, and modinfos already holds the scan result.
         if play == "replay":
             return []
-        gamespath = os.path.join(datafolder, "games")
-        if not os.path.isdir(gamespath):
-            return []
         wanted_modtype = "1" if play == "bar" else "5"
+        gamesroot = os.path.join(barinstallpath, datafolder, "games")
         out = []
-        for gamedir in sorted(os.listdir(gamespath)):
-            label = f"[LOCAL] {gamedir}"
-            mi = modinfos.get(label)
-            if mi and str(mi.get("modtype", "")) == wanted_modtype:
-                out.append(os.path.join(gamespath, gamedir))
+        for label, mi in sorted(modinfos.items()):
+            if label.startswith("[LOCAL] ") and str(mi.get("modtype", "")) == wanted_modtype:
+                out.append(os.path.join(gamesroot, label[len("[LOCAL] "):]))
         return out
 
     config_frame = ttk.LabelFrame(root, text='What to launch', style='Section.TLabelframe')
@@ -855,26 +677,19 @@ if len(sys.argv) < 2: # no arguments passed, use GUI
         """Return (opts list, default-local-opt-if-any) for one source axis."""
         opts = ["Latest"]
         local_opt = None
-        if _local_available(play):
-            paths = _local_source_paths(play)
-            tag = paths[0] if paths else "<unknown path>"
-            local_opt = f"Local checkout ({tag})"
+        paths = _local_source_paths(play)
+        if paths:
+            local_opt = f"Local checkout ({paths[0]})"
             opts.append(local_opt)
         for v in _pinned_versions(play):
             opts.append(f"Pinned: {v}")
         return opts, local_opt
 
-    def _populate_chobby_sources():
-        opts, local_opt = _source_options_for("chobby")
-        chobby_source_cb['values'] = opts
-        if selected_chobby_source.get() not in opts:
-            selected_chobby_source.set(local_opt or opts[0])
-
-    def _populate_game_sources():
-        opts, local_opt = _source_options_for("bar")
-        game_source_cb['values'] = opts
-        if selected_game_source.get() not in opts:
-            selected_game_source.set(local_opt or opts[0])
+    def _populate_sources(play, cb, var):
+        opts, local_opt = _source_options_for(play)
+        cb['values'] = opts
+        if var.get() not in opts:
+            var.set(local_opt or opts[0])
 
     def _refresh_states():
         """Grey out the source dropdowns / Map / Boot that don't apply to
@@ -887,23 +702,11 @@ if len(sys.argv) < 2: # no arguments passed, use GUI
         boot_cb.configure(state="readonly" if play in ("chobby", "bar") else "disabled")
         engine_cb.configure(state="readonly" if play != "replay" else "disabled")
 
-    _populate_chobby_sources()
-    _populate_game_sources()
+    _populate_sources("chobby", chobby_source_cb, selected_chobby_source)
+    _populate_sources("bar", game_source_cb, selected_game_source)
     selected_boot.set(default_boot("chobby"))
 
     runcmd = ""
-
-    def _ctx():
-        # Wrap the GUI's existing globals as a Context so we can reuse the
-        # CLI's command builder. build_runcmd is the canonical place that
-        # encodes how (modinfo, engine, map) becomes the engine invocation.
-        return Context(
-            barinstallpath=barinstallpath,
-            datafolder=datafolder,
-            launcher_binary=launcher_binary,
-            engines=engines,
-            modinfos=modinfos,
-        )
 
     def gencmd(event=None):
         global runcmd
@@ -935,7 +738,9 @@ if len(sys.argv) < 2: # no arguments passed, use GUI
         mymap = selected_map.get()
         modopts = modoptionstb.get('1.0', tk.END)
         try:
-            runcmd = build_runcmd(_ctx(), modinfo, myengine, mymap, modopts)
+            # ctx is the Context refresh() built from these same globals;
+            # build_runcmd is the canonical encoder of (modinfo, engine, map).
+            runcmd = build_runcmd(ctx, modinfo, myengine, mymap, modopts)
         except (KeyError, ValueError) as e:
             runcmd = ""
             cmdtext.delete('1.0', tk.END)
@@ -975,6 +780,12 @@ if len(sys.argv) < 2: # no arguments passed, use GUI
 
     def startspring():
         gencmd(None)
+        if not runcmd:
+            # gencmd leaves runcmd empty for Play=Replay and for resolve/build
+            # errors (the reason is already shown in the command panel);
+            # Popen([]) would raise, or run a bare host-exec in a container.
+            print("Nothing to launch; see the Generated command panel.")
+            return
         print('starting spring with', runcmd)
         subprocess.Popen(host_cmd_prefix() + shlex.split(runcmd), close_fds=True)
 

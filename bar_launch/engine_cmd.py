@@ -3,9 +3,34 @@ from __future__ import annotations
 
 import json
 import os
+import platform
+import shlex
 from typing import Optional
 
 from .core import Context
+
+
+def q(arg: str) -> str:
+    """Quote one argv element for the command string.
+
+    The string is consumed via shlex.split(), so either quoting style parses;
+    what matters is what happens when a user copies it from the GUI panel or
+    --print-cmd into a shell. POSIX shells (and PowerShell) expand $VERSION
+    inside double quotes, turning --menu "BYAR Chobby $VERSION" into
+    "BYAR Chobby " and producing an unhelpful "Dependent archive ... not
+    found" from the engine -- while the very same string worked from the
+    launcher, which never goes through a shell. shlex.quote single-quotes on
+    POSIX so the pasted command matches what the launcher runs. cmd.exe has
+    no single quotes, so Windows keeps double quotes.
+    """
+    if platform.system() == "Windows":
+        return f'"{arg}"'
+    return shlex.quote(arg)
+
+
+def argv_of(cmd: str) -> list[str]:
+    """Inverse of build_runcmd's string encoding: the argv Popen will get."""
+    return shlex.split(cmd)
 
 SCRIPT_BASE = """
 [game]
@@ -118,13 +143,33 @@ def build_runcmd(
 
     mtype = modinfo["modtype"]
     if mtype == "5":
-        return f'"{enginepath}"  --isolation --write-dir "{write_dir}" --menu "{modinfo["name"]}"'
+        return f'{q(enginepath)} --isolation --write-dir {q(write_dir)} --menu {q(modinfo["name"])}'
     if mtype == "1":
         if mapname and mapname != "Ill choose my own once ingame":
             write_start_script(modopts, mapname, modinfo["name"], script_path)
-            return f'"{enginepath}"  --isolation --write-dir "{write_dir}" "{script_path}"'
-        return f'"{enginepath}"  --isolation --write-dir "{write_dir}"'
+            return f'{q(enginepath)} --isolation --write-dir {q(write_dir)} {q(script_path)}'
+        return f'{q(enginepath)} --isolation --write-dir {q(write_dir)}'
     if mtype == "0":
         write_dev_lobby_config(engine_version, modinfo["name"], config_path)
-        return f'"{os.path.join(ctx.barinstallpath, ctx.launcher_binary)}" -c "{config_path}"'
+        return f'{q(os.path.join(ctx.barinstallpath, ctx.launcher_binary))} -c {q(config_path)}'
     raise ValueError(f"unknown modtype {mtype!r}")
+
+
+def missing_binary_message(cmd: str, modinfo: dict) -> Optional[str]:
+    """Explain a guaranteed launch failure up front, or None if the binary exists.
+
+    Both the AppImage launcher and the engine are addressed by absolute path,
+    so a missing file means Popen (or distrobox-host-exec) would only produce
+    a traceback / "command not found" in whatever terminal the GUI happens to
+    be attached to. The launcher-boot case gets the actionable hint: nothing
+    about a local engine + local checkout needs the AppImage.
+    """
+    argv = argv_of(cmd)
+    if not argv or os.path.isfile(argv[0]):
+        return None
+    msg = f"Binary not found: {argv[0]}"
+    if modinfo.get("modtype") == "0":
+        msg += ("\nThis boot goes through the Beyond-All-Reason launcher. Either pick "
+                "Boot = engine (runs spring directly, needs no AppImage / .exe), or point "
+                "at one with --launcher-binary / BAR_APPIMAGE_PATH.")
+    return msg

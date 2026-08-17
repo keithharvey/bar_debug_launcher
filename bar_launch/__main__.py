@@ -9,13 +9,12 @@ from __future__ import annotations
 import argparse
 import os
 import platform
-import shlex
 import subprocess
 import sys
 from typing import Optional
 
 from .core import build_context, host_cmd_prefix
-from .engine_cmd import build_runcmd
+from .engine_cmd import argv_of, build_runcmd, missing_binary_message
 from .intents import Intent, default_boot, resolve_intent
 
 
@@ -132,8 +131,12 @@ def main(argv: Optional[list[str]] = None) -> int:
         print(cmd)
         return 0
 
-    print(f"Launching ({label!r} on engine {engine_version!r}):", cmd)
-    subprocess.Popen(host_cmd_prefix() + shlex.split(cmd), close_fds=True)
+    problem = missing_binary_message(cmd, modinfo)
+    if problem:
+        raise SystemExit(f"error: {problem}")
+    argv = host_cmd_prefix() + argv_of(cmd)
+    print(f"Launching ({label!r} on engine {engine_version!r}):", argv)
+    subprocess.Popen(argv, close_fds=True)
     return 0
 
 

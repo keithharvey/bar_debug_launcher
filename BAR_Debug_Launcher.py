@@ -9,7 +9,6 @@ import platform
 import os
 import re
 import subprocess
-import shlex
 import sys
 import shutil
 import webbrowser
@@ -37,7 +36,7 @@ from bar_launch.core import (
     launcher_binary_display,
     prd_binary,
 )
-from bar_launch.engine_cmd import build_runcmd
+from bar_launch.engine_cmd import argv_of, build_runcmd, missing_binary_message, q
 from bar_launch.intents import (
     BOOT_CHOICES,
     Intent,
@@ -281,9 +280,10 @@ def try_start_replay(replayfilepath):
             exitpause("")
 
     #5. start the demo 
-    runcmd = f'"{os.path.join(barinstallpath, datafolder,"engine",enginedir, engine_binary)}"  --isolation --write-dir "{os.path.join(barinstallpath, datafolder)}" "{savedreplaypath}"'
-    print ("Launching engine for replay with:", runcmd)
-    subprocess.Popen(host_cmd_prefix() + shlex.split(runcmd),close_fds=True )
+    runcmd = f'{q(os.path.join(barinstallpath, datafolder, "engine", enginedir, engine_binary))} --isolation --write-dir {q(os.path.join(barinstallpath, datafolder))} {q(savedreplaypath)}'
+    argv = host_cmd_prefix() + argv_of(runcmd)
+    print("Launching engine for replay with:", argv)
+    subprocess.Popen(argv, close_fds=True)
     #print (demo.header)
 
 
@@ -707,9 +707,10 @@ if len(sys.argv) < 2: # no arguments passed, use GUI
     selected_boot.set(default_boot("chobby"))
 
     runcmd = ""
+    run_modinfo = {}   # modinfo behind runcmd, for the pre-launch binary check
 
     def gencmd(event=None):
-        global runcmd
+        global runcmd, run_modinfo
         play = PLAY_BY_LABEL.get(selected_play_label.get(), "chobby")
         if play == "replay":
             runcmd = ""
@@ -741,6 +742,7 @@ if len(sys.argv) < 2: # no arguments passed, use GUI
             # ctx is the Context refresh() built from these same globals;
             # build_runcmd is the canonical encoder of (modinfo, engine, map).
             runcmd = build_runcmd(ctx, modinfo, myengine, mymap, modopts)
+            run_modinfo = modinfo
         except (KeyError, ValueError) as e:
             runcmd = ""
             cmdtext.delete('1.0', tk.END)
@@ -749,6 +751,12 @@ if len(sys.argv) < 2: # no arguments passed, use GUI
         print(f"[{label}]", runcmd)
         cmdtext.delete('1.0', tk.END)
         cmdtext.insert('1.0', str(runcmd))
+        # Keep runcmd (the command is still what we'd run) but tell the user
+        # up front why Launch would fail, instead of a traceback / host-exec
+        # "not found" landing in a terminal they may not be watching.
+        problem = missing_binary_message(runcmd, modinfo)
+        if problem:
+            cmdtext.insert(tk.END, "\n\n# " + problem.replace("\n", "\n# "))
 
     def _on_play_changed(event=None):
         play = PLAY_BY_LABEL.get(selected_play_label.get(), "chobby")
@@ -786,8 +794,16 @@ if len(sys.argv) < 2: # no arguments passed, use GUI
             # Popen([]) would raise, or run a bare host-exec in a container.
             print("Nothing to launch; see the Generated command panel.")
             return
-        print('starting spring with', runcmd)
-        subprocess.Popen(host_cmd_prefix() + shlex.split(runcmd), close_fds=True)
+        problem = missing_binary_message(runcmd, run_modinfo)
+        if problem:
+            print("Not launching --", problem)
+            return
+        argv = host_cmd_prefix() + argv_of(runcmd)
+        # Log the exact argv, not the display string: shows the host-exec
+        # prefix when containerized, and is what to compare against if a
+        # hand-typed shell command behaves differently (shell expansion).
+        print('starting spring with', argv)
+        subprocess.Popen(argv, close_fds=True)
 
     button_frame = ttk.Frame(root)
     button_frame.grid(row=4, column=0, sticky=tk.EW, padx=PAD, pady=(PAD // 2, PAD))

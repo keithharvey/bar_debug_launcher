@@ -26,6 +26,14 @@ def host_cmd_prefix():
         for tool in ("distrobox-host-exec", "host-spawn"):
             path = shutil.which(tool)
             if path:
+                if tool == "distrobox-host-exec" and not shutil.which("host-spawn"):
+                    # distrobox-host-exec is a shim over host-spawn; when that's
+                    # missing it stops on an interactive "install host-spawn?
+                    # [Y/n]" prompt on *our* stdin -- from the GUI that's a
+                    # launch that silently never happens. Say so.
+                    print("warning: host-spawn is not installed in this container; "
+                          "distrobox-host-exec will prompt to install it on this terminal "
+                          "(or run `distrobox-host-exec -Y true` once).", file=sys.stderr)
                 return [path]
     return []
 

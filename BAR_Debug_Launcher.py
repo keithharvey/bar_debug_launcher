@@ -30,6 +30,7 @@ from bar_launch.core import (
     engine_download_baseurl,
     engine_download_baseurl_new,
     engine_download_baseurl_newest,
+    explain_exit,
     find_linux_datadir,
     find_linux_launcher_binary as _find_linux_launcher_binary,
     host_cmd_prefix,
@@ -802,8 +803,26 @@ if len(sys.argv) < 2: # no arguments passed, use GUI
         # Log the exact argv, not the display string: shows the host-exec
         # prefix when containerized, and is what to compare against if a
         # hand-typed shell command behaves differently (shell expansion).
-        print('starting spring with', argv)
-        subprocess.Popen(argv, close_fds=True)
+        print('starting spring with', argv, flush=True)
+        proc = subprocess.Popen(argv, close_fds=True)
+
+        def _watch():
+            # Fire-and-forget hid every failure: a click that "did nothing"
+            # was the engine dying instantly on the host with nobody reading
+            # its exit code. Poll it and put the verdict where the user is
+            # looking (the command panel) as well as the terminal.
+            rc = proc.poll()
+            if rc is None:
+                root.after(1000, _watch)
+                return
+            msg = f"engine process exited with code {rc}"
+            hint = explain_exit(rc, argv)
+            if hint:
+                msg += "\n" + hint
+            print(msg, file=sys.stderr, flush=True)
+            if rc != 0:
+                cmdtext.insert(tk.END, "\n\n# " + msg.replace("\n", "\n# "))
+        root.after(1000, _watch)
 
     button_frame = ttk.Frame(root)
     button_frame.grid(row=4, column=0, sticky=tk.EW, padx=PAD, pady=(PAD // 2, PAD))

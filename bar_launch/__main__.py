@@ -13,7 +13,7 @@ import subprocess
 import sys
 from typing import Optional
 
-from .core import build_context, host_cmd_prefix
+from .core import build_context, explain_exit, host_cmd_prefix
 from .engine_cmd import argv_of, build_runcmd, missing_binary_message
 from .intents import Intent, default_boot, resolve_intent
 
@@ -144,7 +144,11 @@ def main(argv: Optional[list[str]] = None) -> int:
     # the Launching line. Headless is a terminal command; behave like one.
     proc = subprocess.Popen(argv, close_fds=True)
     try:
-        return proc.wait()
+        rc = proc.wait()
+        hint = explain_exit(rc, argv)
+        if hint:
+            print(f"bar_launch: {hint}", file=sys.stderr)
+        return rc
     except KeyboardInterrupt:
         proc.terminate()
         try:

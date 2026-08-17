@@ -72,3 +72,14 @@ def test_missing_binary_message_launcher_hint(ctx):
     msg = missing_binary_message(cmd, mi)
     assert msg and "Beyond-All-Reason.AppImage" in msg
     assert "Boot = engine" in msg and "BAR_APPIMAGE_PATH" in msg
+
+
+def test_explain_exit_127_via_host_bridge():
+    from bar_launch.core import explain_exit
+    argv = ["/usr/bin/distrobox-host-exec", "/opt/b a r/spring", "--isolation"]
+    hint = explain_exit(127, argv)
+    assert hint and "host bridge" in hint and "'/opt/b a r/spring'" in hint
+    assert explain_exit(0, argv) is None
+    assert explain_exit(1, argv) is None
+    direct = explain_exit(127, ["/opt/spring", "--isolation"])
+    assert direct and "could not exec '/opt/spring'" in direct

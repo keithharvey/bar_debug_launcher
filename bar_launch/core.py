@@ -7,6 +7,7 @@ from __future__ import annotations
 import os
 import platform
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -36,6 +37,31 @@ def host_cmd_prefix():
                           "(or run `distrobox-host-exec -Y true` once).", file=sys.stderr)
                 return [path]
     return []
+
+
+def explain_exit(rc: int, argv: list[str]) -> Optional[str]:
+    """Human hint for a launch child's exit code, or None if nothing to add.
+
+    127 is the shared signature of "could not exec": host-spawn uses it when
+    the host side fails to spawn (no flatpak session helper on the host, path
+    missing on the host), and ld.so uses it when the binary loads but a shared
+    library is missing (an engine built against container libs, run on the
+    host). Both look identical from inside the container, so hand over the
+    one-liners that tell them apart.
+    """
+    if rc != 127 or not argv:
+        return None
+    if os.path.basename(argv[0]) in ("distrobox-host-exec", "host-spawn") and len(argv) > 1:
+        binary = shlex.quote(argv[1])
+        return (
+            "exit 127 came back through the host bridge: either the bridge failed or the engine "
+            "can't be exec'd on the host. From inside the container:\n"
+            "  distrobox-host-exec /bin/echo host-ok           # bridge works? (needs flatpak's session helper on the host)\n"
+            f"  distrobox-host-exec ls -L {binary}   # symlink target exists on the host?\n"
+            f"  distrobox-host-exec ldd {binary} | grep -i 'not found'   # loadable on the host?"
+        )
+    return (f"exit 127: could not exec {argv[0]!r} -- missing file, missing ELF interpreter, "
+            "or a shared library not found (try: ldd on it)")
 
 
 # ---------------------------------------------------------------------------

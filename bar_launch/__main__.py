@@ -135,9 +135,23 @@ def main(argv: Optional[list[str]] = None) -> int:
     if problem:
         raise SystemExit(f"error: {problem}")
     argv = host_cmd_prefix() + argv_of(cmd)
-    print(f"Launching ({label!r} on engine {engine_version!r}):", argv)
-    subprocess.Popen(argv, close_fds=True)
-    return 0
+    print(f"Launching ({label!r} on engine {engine_version!r}):", argv, flush=True)
+    # Stay attached. Fire-and-forget Popen + exit looked fine on a bare host
+    # (the orphaned engine kept the terminal), but the devtools flow runs this
+    # inside `distrobox enter`: when we exit, the exec session's pty closes and
+    # the distrobox-host-exec -> host-spawn chain is SIGHUP'd before the engine
+    # prints a single line -- a "launch" that produces exactly nothing after
+    # the Launching line. Headless is a terminal command; behave like one.
+    proc = subprocess.Popen(argv, close_fds=True)
+    try:
+        return proc.wait()
+    except KeyboardInterrupt:
+        proc.terminate()
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+        return 130
 
 
 if __name__ == "__main__":

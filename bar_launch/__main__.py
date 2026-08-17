@@ -13,7 +13,7 @@ import subprocess
 import sys
 from typing import Optional
 
-from .core import build_context, explain_exit, host_cmd_prefix
+from .core import build_context, check_host_bridge, explain_exit, host_cmd_prefix
 from .engine_cmd import argv_of, build_runcmd, missing_binary_message
 from .intents import Intent, default_boot, resolve_intent
 
@@ -134,7 +134,11 @@ def main(argv: Optional[list[str]] = None) -> int:
     problem = missing_binary_message(cmd, modinfo)
     if problem:
         raise SystemExit(f"error: {problem}")
-    argv = host_cmd_prefix() + argv_of(cmd)
+    prefix = host_cmd_prefix()
+    bridge_problem = check_host_bridge(prefix)
+    if bridge_problem:
+        raise SystemExit(f"error: {bridge_problem}")
+    argv = prefix + argv_of(cmd)
     print(f"Launching ({label!r} on engine {engine_version!r}):", argv, flush=True)
     # Stay attached. Fire-and-forget Popen + exit looked fine on a bare host
     # (the orphaned engine kept the terminal), but the devtools flow runs this

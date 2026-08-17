@@ -83,3 +83,11 @@ def test_explain_exit_127_via_host_bridge():
     assert explain_exit(1, argv) is None
     direct = explain_exit(127, ["/opt/spring", "--isolation"])
     assert direct and "could not exec '/opt/spring'" in direct
+
+
+def test_check_host_bridge():
+    from bar_launch.core import check_host_bridge
+    assert check_host_bridge([]) is None                       # native: nothing to check
+    assert check_host_bridge(["/usr/bin/env"]) is None         # a working "bridge"
+    msg = check_host_bridge(["/bin/sh", "-c", "echo 'no flatpak session helper' >&2; exit 127; --"])
+    assert msg and "exit 127" in msg and "flatpak" in msg

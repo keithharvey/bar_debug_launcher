@@ -39,6 +39,34 @@ def host_cmd_prefix():
     return []
 
 
+def check_host_bridge(prefix: list[str], timeout: float = 15.0) -> Optional[str]:
+    """Verify the container->host bridge works before we bet a launch on it.
+
+    Returns None if `prefix` is empty or `prefix + [/bin/true]` succeeds; else a
+    human explanation. The bridge (distrobox-host-exec -> host-spawn) is a call
+    to org.freedesktop.Flatpak.Development.HostCommand on the host's session
+    bus, i.e. it needs flatpak's session helper on the host -- a dependency
+    that has nothing to do with the engine and fails as a bare exit 127.
+    """
+    if not prefix:
+        return None
+    try:
+        r = subprocess.run(prefix + ["/bin/true"], capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return (f"{os.path.basename(prefix[0])} did not answer within {timeout:.0f}s "
+                "(is it waiting on a prompt in the terminal, e.g. to install host-spawn?)")
+    except OSError as e:
+        return f"could not run {prefix[0]}: {e}"
+    if r.returncode == 0:
+        return None
+    detail = (r.stderr or r.stdout).strip().splitlines()
+    why = f": {detail[-1]}" if detail else ""
+    return (f"container->host bridge failed (exit {r.returncode}{why}). "
+            "distrobox-host-exec/host-spawn need flatpak's session helper on the HOST "
+            "(install flatpak there), or run the launcher outside the container so it "
+            "execs the engine directly.")
+
+
 def explain_exit(rc: int, argv: list[str]) -> Optional[str]:
     """Human hint for a launch child's exit code, or None if nothing to add.
 

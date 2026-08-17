@@ -26,6 +26,7 @@ from slpp import slpp
 
 from bar_launch.core import (
     build_context,
+    check_host_bridge,
     engine_binary,
     engine_download_baseurl,
     engine_download_baseurl_new,
@@ -799,7 +800,13 @@ if len(sys.argv) < 2: # no arguments passed, use GUI
         if problem:
             print("Not launching --", problem)
             return
-        argv = host_cmd_prefix() + argv_of(runcmd)
+        prefix = host_cmd_prefix()
+        bridge_problem = check_host_bridge(prefix)
+        if bridge_problem:
+            print("Not launching --", bridge_problem, file=sys.stderr, flush=True)
+            cmdtext.insert(tk.END, "\n\n# " + bridge_problem)
+            return
+        argv = prefix + argv_of(runcmd)
         # Log the exact argv, not the display string: shows the host-exec
         # prefix when containerized, and is what to compare against if a
         # hand-typed shell command behaves differently (shell expansion).
